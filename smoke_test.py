@@ -26,6 +26,11 @@
     S19 ★ derive 同名维度不许静默覆盖（要换必须显式 force）
     S20 ★ ask(with_body)：连正文一起返回，正文与文件逐字相同
     S21 ★ with_body 截断必须明说（truncated + note 报字数和条数）
+    S22 ★ 会话缓冲：曝光进缓冲 / 下钻标 promoted / 两个会话互不可见
+    S23 ★ 缓冲有界：挤掉记账 / 漏检率可读（挤掉后再提到 ⇒ 计数+）
+    S24 ★ 多个 ldv：不给名字 ⇒ 列出全部（只数文件不建内核）
+    S25 ★ 使用记录隔离（可选）：isolate_usage ⇒ 两个会话的倾向互不影响
+    S26 ★ 等价消费者：agent 填的内容在出处里单独一桶（标记真的分得开）
 """
 from __future__ import annotations
 
@@ -436,11 +441,23 @@ def main() -> int:
             and iso2["out"].get("ordered_by") == "default",
             f"iso1 {iso1['out'].get('ordered_by')}｜iso2 {iso2['out'].get('ordered_by')}")
 
+        # ── S26 agent 与人是等价消费者：agent 填的内容在出处里**单独一桶** ──
+        # 用户 2026-10-24 定：三种缺口 agent 都能补，人只复核 ⇒ 唯一硬要求是
+        # **标记如实**。这条判据验的就是「标记真的分得开」。
+        qa = tool(c, "ask", {"corpus": "mine", "require": ["type=笔记"]})
+        b = (qa["out"].get("provenance") or {}).get("buckets") or {}
+        qb = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
+        b2 = (qb["out"].get("provenance") or {}).get("buckets") or {}
+        chk("S26", "★ 等价消费者：agent 填的在出处里单独一桶，与语料原有的分开",
+            b.get("agent") == 1 and all(k.startswith("模型") for k in b2),
+            f"type=笔记 ⇒ {b}（remember 写的，filled_by=agent）"
+            f"｜type=立场 ⇒ {b2}（语料原有的）")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S25）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S26）")
     return 1 if FAIL else 0
 
 
