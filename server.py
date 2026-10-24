@@ -434,8 +434,15 @@ def _tool_ask(a: dict) -> dict:
            "session": sess_info,
            "n_answer": r.get("n_answer"),
            "items": items,
+           # ★ 三条「不许猜」的规矩（2026-10-24 用户定）
+           #   ① 多条同时能回答 ⇒ **都列出来**，让 agent 兼并后给出回答，
+           #      不许挑一条当「真的」（挑 = 猜）
+           #   ② 缓冲只记顺序编号 ⇒ 超出的就说「顺序不记了」
+           #   ③ 这一格是空的 ⇒ 可能是材料里没有，也可能是**维度不存在**；
+           #      后者交给 agent 补（derive / 换问法），不许拿别的维度顶上
            "note": ("id 与结构留在本地：动作说「第 n 条」（drill/undo 的 n）即可；"
-                    "要看分支与谓词用 structure=true"),
+                    "要看分支与谓词用 structure=true。"
+                    "**多条同时能回答时，把它们都列出来** —— 不许挑一条当真的"),
            "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
            "derived_used": derived_used,
            "derived_note": ("本次用到的维度里，这些是 **agent 派生的**"
@@ -443,6 +450,13 @@ def _tool_ask(a: dict) -> dict:
                             if derived_used else ""),
            "provenance": _provenance(app, r.get("answer_ids") or []),
            "usage_enabled": app._usage_dir is not None and in_store}
+    if not items and r.get("n_answer"):
+        out["items_note"] = (f"答案有 {r.get('n_answer')} 条，这里只给了 {limit} 条"
+                             "（limit 卡住了）—— 要更多就放大 limit，"
+                             "**别拿没给的当不存在**")
+    elif not items:
+        out["items_note"] = ("这一格是空的 —— 要么材料里真没有，要么**这个维度不存在**；"
+                             "后者交给 agent 补（derive 一个维度 / 换问法），不许猜")
     if a.get("structure"):
         out.update({"nodes": nodes, "answer_ids": ids_sorted,
                     "n_branches": r.get("n_branches"),
@@ -806,7 +820,7 @@ TOOLS = [
                          "forbid": {"type": "array", "items": {"type": "string"}},
                          "actor": {"type": "string"}, "session": {"type": "string"},
                          "n": {"type": "integer",
-                               "description": "句柄：第 n 条有用（不必给 did）"}},
+                               "description": "缓冲顺序编号：第 n 条有用（不必给 did；超出则回「顺序不记了」）"}},
                      "required": ["did", "require"]}},
     {"name": "derive",
      "description": "agent 敲定一个**派生维度**（词汇表里没有的轴，它自己建）—— "
@@ -834,7 +848,7 @@ TOOLS = [
                          "corpus": {"type": "string"},
                          "id": {"type": "string", "description": "要删来看后果的项"},
                          "n": {"type": "integer",
-                               "description": "句柄：删第 n 条（与 id 二选一）"},
+                               "description": "缓冲顺序编号：删第 n 条（与 id 二选一；超出则回「顺序不记了」）"},
                          "require": {"type": "array", "items": {"type": "string"}},
                          "forbid": {"type": "array", "items": {"type": "string"}},
                          "plugin": {"type": "string"}},

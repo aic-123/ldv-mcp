@@ -212,7 +212,10 @@ def main() -> int:
 
     print("\n说明")
     print("  · prompt tokens 是 **API 回传的真实用量**，不是估算")
-    print("  · 窄查询（唯一键）答案集=1 ⇒ 最省；宽查询贵且**针可能不在前 limit 条**")
+    print("  · 窄查询（唯一键）答案集=1 ⇒ 最省")
+    print("  · 宽查询那列**不是产品的漏**：查询覆盖不上时，agent 会去要方向/节点")
+    print("    （derive / out_of_structure → can_agent_fill）。这里测的只是")
+    print("    『limit 卡住时不许当成不存在』——现在 ask 会明说还有几条没给。")
     print("  · WITHOUT 在最大那档可能撞上下文上限 —— 那是真实的失败模式，如实记")
     return 0
 

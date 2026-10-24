@@ -552,11 +552,30 @@ def main() -> int:
         chk("S30", "★ 密钥不进仓库：已跟踪文件里扫不到 sk- 开头的 key",
             not leaks, f"扫了 {len(tracked)} 个已跟踪文件｜泄漏：{leaks or '无'}")
 
+        # ── S31 「不许猜」三条：多选都列 / 空要说明 / 超出说不记 ────────
+        # 用户 2026-10-24：同时能回答就交给 agent 兼并，猜肯定不行；
+        # 缓冲只记顺序编号，超出回复「不记顺序了」；查询覆盖不上是去要方向/节点，
+        # 不是拿别的顶上。
+        q1 = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
+        # ⚠️ 要**已知键、零命中**（type=立场 与 source.kind=教材 都是词表里的键，
+        #   但两者没有交集）⇒ 走 ok=True + n_answer=0 那条路，
+        #   而不是 out_of_structure（那是未知键，另一条路）。
+        q2 = tool(c, "ask", {"corpus": "mine",
+                              "require": ["type=立场", "source.kind=教材"]})
+        d3 = tool(c, "drill", {"corpus": "mine", "n": 999, "require": ["type=立场"]})
+        chk("S31", "★ 三条不许猜：多选都列出来 / 空答案说明去哪要 / 顺序超出明说",
+            "都列出来" in str(q1["out"].get("note"))
+            and "不许猜" in str(q2["out"].get("items_note"))
+            and "顺序不记了" in str(d3["out"].get("why")),
+            f"note 含「都列出来」={('都列出来' in str(q1['out'].get('note')))}"
+            f"｜空答案：{str(q2['out'].get('items_note'))[:30]}"
+            f"｜超界：{str(d3['out'].get('why'))[:26]}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S30）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S31）")
     return 1 if FAIL else 0
 
 

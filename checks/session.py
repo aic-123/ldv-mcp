@@ -165,6 +165,8 @@ def resolve_handle(ldv_root: str | Path, n: int | str, *,
 
     ⚠️ 查询对不上（`require/forbid` 不同）⇒ 拒 —— 否则「第 3 条」会指到
       另一次查询的第 3 条，那是**静默指错**，比报错糟。
+    ⚠️ 超出缓冲记的范围 ⇒ 明说「顺序不记了」（2026-10-24 用户定）——
+      缓冲只保存下来的顺序，不保存「本该有多少」。
     """
     doc = _read(handles_path(ldv_root), {})
     if not doc:
@@ -173,10 +175,14 @@ def resolve_handle(ldv_root: str | Path, n: int | str, *,
     if doc.get("require") != want_r or doc.get("forbid") != want_f:
         return None, (f"句柄属于另一次查询（require={doc.get('require')}、"
                       f"forbid={doc.get('forbid')}），与这次不符 —— 请重新 ask")
-    hit = (doc.get("items") or {}).get(str(n))
-    if hit is None:
-        return None, f"没有第 {n} 条（这次查询给了 {len(doc.get('items') or {})} 条）"
-    return hit, ""
+    items = doc.get("items") or {}
+    ks = str(n)
+    if ks not in items:
+        got = len(items)
+        if ks.isdigit() and int(ks) > got:
+            return None, (f"顺序不记了 —— 缓冲只记到第 {got} 条（第 {ks} 条超出了）")
+        return None, f"没有第 {ks} 条（这次查询给了 {got} 条）"
+    return items[ks], ""
 
 
 def handles(ldv_root: str | Path) -> dict:
