@@ -83,6 +83,7 @@
 ldv-mcp/
   server.py          MCP stdio 服务器（薄适配）
   smoke_test.py      二十一条冒烟判据（S1–S21）
+  probes/            可复跑的实验（有/无插件差距、主体性判据）+ out/ 逐字留档
   checks/            发货自带的判据（键 / 白名单 / 支序）
   spec_store/        声明仓库（冻结 + 指纹 + 账本）
   presets/           三个开箱方向函数（人话 + 什么时候选哪个）
