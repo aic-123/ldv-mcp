@@ -14,10 +14,14 @@
     S8  drill ⇒ 使用记录真的落了一条（私人语料在 store 下）
     S9  usage_status 报「启用」+ 记录数 1
     S10 支序对拍：把 nodes 的 did 序列与内核直接跑的逐字相同
+    S11 ★ 调用日志：**每次**工具调用都落一行（agent 的审计轨迹要完整）
+    S12 ★ 出处摘要：buckets 之和 == n_answer，且内置语料 36/36 是 `filled_by: 模型`
+    S13 ★ 演员分解：actor 是调用方**声明**的，照记；usage_status 报 agent 占比
 """
 from __future__ import annotations
 
 import json
+import io
 import os
 import subprocess
 import sys
@@ -28,6 +32,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PY = sys.executable
 FAIL = 0
+CALLS = 0
 
 
 def chk(tag: str, what: str, good: bool, detail: str = "") -> None:
@@ -80,6 +85,8 @@ class MCP:
 
 
 def tool(c: MCP, name: str, args: dict) -> dict:
+    global CALLS
+    CALLS += 1
     r = c.call("tools/call", {"name": name, "arguments": args})
     res = r.get("result") or {}
     txt = ""
@@ -179,11 +186,48 @@ def main() -> int:
             f"MCP {[n['did'] for n in (q3['out'].get('nodes') or [])][:4]} vs "
             f"直接 {[n['did'] for n in (direct2.get('nodes') or [])][:4]}｜"
             f"ordered_by {q3['out'].get('ordered_by')}/{direct2.get('ordered_by')}")
+
+        # ── S11 调用日志：每次工具调用都落一行 ─────────────────────────
+        log = store / "log" / "mcp-calls.jsonl"
+        rows = []
+        if log.is_file():
+            for line in io.open(log, encoding="utf-8"):
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    pass
+        chk("S11", "★ 调用日志：每次工具调用一行，条数对得上、字段齐",
+            len(rows) == CALLS and all(
+                r.get("tool") and r.get("actor") and r.get("at") and "summary" in r
+                for r in rows),
+            f"日志 {len(rows)} 行｜本趟调用 {CALLS} 次")
+
+        # ── S12 出处摘要：三类分开数，且和 == n_answer ──────────────────
+        # ⚠️ 第一版期望 filled_by == "模型"，实测内置语料的值是
+        #    "模型(DeepSeek-V4.1-Flash)"（带模型名）⇒ 判据该判的是
+        #    「一类、且那一类以『模型』开头」，不是判死字符串。
+        prov = (q3["out"].get("provenance") or {})
+        buckets = prov.get("buckets") or {}
+        chk("S12", "★ 出处摘要：buckets 之和 == n_answer；内置语料全是模型填的",
+            sum(buckets.values()) == q3["out"].get("n_answer")
+            and bool(buckets) and all(k.startswith("模型") for k in buckets),
+            f"buckets {buckets}｜n_answer {q3['out'].get('n_answer')}")
+
+        # ── S13 演员分解：声明照记，usage_status 报占比 ─────────────────
+        d2 = tool(c, "drill", {"corpus": "mine", "did": dids[1],
+                               "require": keys[:1], "actor": "human"})
+        u2 = tool(c, "usage_status", {"corpus": "mine"})
+        split = u2["out"].get("actor_split") or {}
+        actors = {r.get("actor") for r in rows} | {"human"}
+        chk("S13", "★ 演员分解：agent 下钻算有用，但**谁钻的可分解**",
+            split.get("记录数") == 2 and split.get("agent 声明的下钻") == 1
+            and d2["out"].get("actor") == "human" and "human" in actors,
+            f"split {split}｜drill2 actor={d2['out'].get('actor')}")
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S10）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S13）")
     return 1 if FAIL else 0
 
 
