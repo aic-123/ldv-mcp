@@ -12,6 +12,7 @@
 | `token_cost.py` | 每问 / 每条答案的 token 成本 | **tiktoken** |
 | `repeat_cost.py` | 重复任务 / 历史检索的成本形状 | **tiktoken** |
 | `eval_rigor.py` | 位置扫描 / 多针 / 重复取均值（对齐 RAGAS 检索侧） | **tiktoken** |
+| `metamorphic.py` | 八条蜕变关系（加/删/改/换序后答案该怎么变） | 无 |
 
 结论与读数见：
 
