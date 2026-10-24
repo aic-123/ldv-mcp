@@ -3,17 +3,29 @@
 
     python server.py            # 宿主（Claude / WorkBuddy / 其他 MCP 客户端）拉起它
 
-## 这个服务器是什么
+## 它是什么（2026-10-24 砍过一次面）
 
-一层**薄适配**：MCP 的 JSON-RPC ⇄ `entry.py` 已经输出的 JSON。
-不碰内核的任何保证 —— 树性、划分、覆盖、假阴，全部由内核自己的判据守。
+**真人像平时一样用 agent，插件只提供两样东西：对 agent 的主体性，和一棵私人方向树。**
+
+⇒ 四件工具，对应 agent 的四种动作，没有一步是给真人设计的：
+
+    orient     「我记得」—— 私人语料 / 透镜 / 使用记录 / 最近动作
+    ask        翻译后的查询（键校验 / 透镜自动冻结 / 支序原样 / 出处摘要）
+    remember   往自己的私人语料写一个节点（只追加不覆写，filled_by 照记）
+    drill      下钻 = 有用（agent 代钻与人的同权）
+
+原先的七件（vocabulary / propose_spec / freeze_spec / spec_status / query /
+usage_status）沉成内部机制：**透镜首次使用即自动冻结**，没有「提议 → 冻结」
+两个动作；词汇表、声明状态、使用记录全并进 `orient`。
+判据一条没少 —— 只是不再占工具面。
 
 ## 它比「随便包一层」多什么
 
     ① 查询键先过 `checks.validate` —— 未知键当场拒，不猜
     ② 支序原样中转 —— 重排即推荐，那是红线
-    ③ 声明走 `spec_store` —— agent 生成、首次使用即冻结、带理由与语料指纹
+    ③ 透镜走 `spec_store` —— agent 生成、**首次使用即自动冻结**、带理由与语料指纹
     ④ 使用记录照旧两段通道 —— 查询只进缓冲，下钻才 promote
+    ⑤ 每次调用落日志 —— 隐形只在对话里，不在日志里；翻译层可接管
 
 ## 语料布局（产品说了算的那一半）
 
@@ -140,93 +152,184 @@ def _spec_dir(corpus: str) -> Path:
     return STORE / "specs" / name
 
 
-# ── 工具实现（每个都返回 dict，由 _call 包成 MCP 的 content） ─────────────────
+# ── 工具实现：四件，对应 agent 的四种动作 ─────────────────────────────────
+#
+# ★ 2026-10-24 用户砍过一次面：「真人唯一要做的就是像正常一样用 agent，
+#   插件只提供两样东西 —— 对 agent 的**主体性**，和一棵**私人方向树**。」
+#   ⇒ 真人对插件零动作；agent 也不需要仪式。原先七件工具里的
+#     「提议 → 冻结 → 查 → 钻 → 状态」沉成内部机制：
+#     · 透镜**首次使用即自动冻结**（没有 propose/freeze 两个动作）
+#     · 词汇表 / 声明状态 / 使用记录 / 最近轨迹 全并进 `orient`
+#     · 判据一条没少（键校验 / 支序原样 / 出处 / 日志），只是不再占工具面
 
-def _tool_vocabulary(a: dict) -> dict:
-    app, in_store = _app(a.get("corpus", ""))
-    keys = sorted(app.all_keys)
-    return {"ok": True, "corpus": app.corpus_name, "n_items": len(app.nodes),
-            "n_keys": len(keys), "keys": keys,
-            "usage_enabled": app._usage_dir is not None and in_store,
-            "note": "查询只能用这些键 —— 它们就是词汇表的全部"}
+def _safe_name(s: str) -> str:
+    """文件名安全化（节点 id 可能有斜杠、空格、中文）。"""
+    return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(s))
 
 
-def _tool_propose_spec(a: dict) -> dict:
+def _tool_orient(a: dict) -> dict:
+    """agent 的「**我记得**」—— 私人 store 的全貌。会话开始调一次。
+
+    这一件就是「主体性」的接口：私人语料、冻结的透镜（带理由与指纹）、
+    使用记录摘要、最近几次自己的动作。没有它，agent 每次会话都是从零开始的
+    陌生人；有了它，它有一个**结构上可查**的过去。
+    """
     corpus = a.get("corpus", "")
-    spec = a.get("spec") or {}
-    rationale = (a.get("rationale") or "").strip()
-    nodes, _ = _corpus_dir(corpus)
-    if nodes is None:
-        raise ValueError("内置语料是只读的，不给它提声明 —— 先指一个私人语料")
-    out = S.propose(_spec_dir(corpus), spec, rationale=rationale,
-                    generated_by=a.get("generated_by", "agent"),
-                    corpus_dir=nodes)
-    out["note"] = "候选已存。它还不是系统的输入 —— freeze_spec 之后才生效"
+    nodes, in_store = _corpus_dir(corpus)
+    app, _ = _app(corpus)
+    out: dict = {"ok": True, "corpus": app.corpus_name,
+                 "n_items": len(app.nodes), "n_keys": len(app.all_keys),
+                 "keys": sorted(app.all_keys),
+                 "usage_enabled": app._usage_dir is not None and in_store}
+    if nodes is not None:
+        st = S.status(_spec_dir(corpus), nodes)
+        out["lens"] = {"frozen": st.get("frozen"), "id": st.get("id"),
+                       "generated_by": st.get("generated_by"),
+                       "rationale": st.get("rationale"),
+                       "stale": st.get("stale"),
+                       "corpus_fingerprint": st.get("corpus_fingerprint")}
+        if st.get("stale"):
+            out["lens_note"] = ("语料变过，这份透镜是对着旧指纹提的 —— 它**仍可用**"
+                                "（结构保证不依赖作者），但该重新提一个")
+        if app._usage_dir is not None and in_store:
+            from ldv.tools import usage_store as US
+
+            us = US.status(app._usage_dir)
+            out["usage"] = {k: us.get(k) for k in
+                            ("记录数", "覆盖方向数", "缓冲批次数", "最多的方向")}
+            out["actor_split"] = _actor_split(app)
+    recent: list[dict] = []
+    if CALL_LOG.is_file():
+        for line in list(io.open(CALL_LOG, encoding="utf-8"))[-5:]:
+            try:
+                recent.append(json.loads(line))
+            except ValueError:
+                continue
+    out["recent_calls"] = recent
+    out["note"] = ("这是你的私人状态：语料、透镜、记得什么、最近做了什么。"
+                   "真人不需要看它 —— 但你可以随时把它讲给人听")
     return out
 
 
-def _tool_freeze_spec(a: dict) -> dict:
-    corpus = a.get("corpus", "")
-    nodes, _ = _corpus_dir(corpus)
-    if nodes is None:
-        raise ValueError("内置语料只读，不冻结声明")
-    return S.freeze(_spec_dir(corpus), a.get("candidate_id", ""),
-                    corpus_dir=nodes, force=bool(a.get("force")))
+def _actor_split(app) -> dict:
+    """正式记录里多少条来自 agent 声明的下钻（读数，不打分不拦截）。"""
+    from ldv.tools import usage_store as US
+
+    agent_q: set[tuple[str, str]] = set()
+    if CALL_LOG.is_file():
+        for line in io.open(CALL_LOG, encoding="utf-8"):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            # ★ 只收 actor 声明为 agent 的下钻（第一版忘过滤 ⇒ 分解失去意义）
+            if row.get("tool") == "drill" and row.get("actor") == "agent":
+                agent_q.add((str(row.get("summary", {}).get("qfp", "")),
+                             str(row.get("summary", {}).get("did", ""))))
+    rows = US.load(app._usage_dir)
+    n_agent = sum(1 for r in rows if (r.get("qfp", ""), r.get("did", "")) in agent_q)
+    return {"记录数": len(rows), "agent 声明的下钻": n_agent,
+            "其余（人 / 未声明）": len(rows) - n_agent,
+            "note": "actor 是调用方**声明**的，服务器不验（同 filled_by）"}
 
 
-def _tool_spec_status(a: dict) -> dict:
-    corpus = a.get("corpus", "")
-    nodes, _ = _corpus_dir(corpus)
-    if nodes is None:
-        return {"ok": True, "frozen": False, "why": "内置语料只读，无声明"}
-    return {"ok": True, **S.status(_spec_dir(corpus), nodes)}
+def _tool_ask(a: dict) -> dict:
+    """把人的问题翻过来，在树上查一支。
 
-
-def _tool_query(a: dict) -> dict:
+    内部顺序（全是机制，不是流程）：
+        ① 键校验    未知键当场拒 —— 在入口**之前**
+        ② 透镜      没有冻结的 ⇒ 本次带了 `lens` 就**自动冻结**（首次使用即冻结），
+                    之后只读文件；带了的插件名先过白名单
+        ③ 支序原样  重排即推荐，可判
+        ④ 出处摘要  {语料/agent填/已验证} 三类分开数
+    """
     corpus = a.get("corpus", "")
     app, in_store = _app(corpus)
     req = list(a.get("require") or [])
     forb = list(a.get("forbid") or [])
 
-    # ① 键校验 —— 产品的第一道闸，在入口之前
     chk = V.check_keys(app.all_keys, req, forb)
     if not chk["ok"]:
         return {"ok": False, "out_of_structure": True, **chk}
 
-    # ③ 冻结的声明 ⇒ 用哪个方向函数（查询参数可覆盖，但白名单先过）
-    plugin = a.get("plugin") or ""
-    spec = S.load(_spec_dir(corpus))
-    if not plugin and spec:
+    nodes_dir, _ = _corpus_dir(corpus)
+    spec = S.load(_spec_dir(corpus)) if nodes_dir is not None else None
+    lens = a.get("lens") or {}
+    if spec is None and lens and nodes_dir is not None:
+        # ★ 自动冻结：agent 给了透镜就冻，**没有第二步动作**。
+        #   理由必填 —— 说不清为什么这么分，就不算一个透镜。
+        cand = S.propose(_spec_dir(corpus), lens,
+                         rationale=str(a.get("rationale") or ""),
+                         generated_by=_actor(a), corpus_dir=nodes_dir)
+        S.freeze(_spec_dir(corpus), cand["candidate_id"], corpus_dir=nodes_dir)
+        spec = S.load(_spec_dir(corpus))
+
+    plugin = ""
+    if spec:
         plugin = (spec.get("spec") or {}).get("插件", "")
+    if a.get("plugin"):
+        plugin = str(a["plugin"])
     if plugin:
         V.check_plugin(plugin)
 
-    spec_q = {"require": req, "forbid": forb}
+    q = {"require": req, "forbid": forb}
     if plugin:
-        spec_q["plugin"] = plugin
-    r = app.query(spec_q)
+        q["plugin"] = plugin
+    r = app.query(q)
     if not r.get("ok"):
         return r
 
-    # ② 支序原样：把 nodes 的 did 序列与内核返回的对一遍再发出去
     nodes = r.get("nodes") or []
     V.check_order([n["did"] for n in nodes], [n["did"] for n in nodes])
-    return {"ok": True, "corpus": app.corpus_name,
-            "actor": _actor(a),
+    return {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
             "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
-            "spec": ({"id": spec.get("id"), "generated_by": spec.get("generated_by"),
+            "lens": ({"id": spec.get("id"), "generated_by": spec.get("generated_by"),
                       "corpus_fingerprint": spec.get("corpus_fingerprint")}
                      if spec else None),
             "n_answer": r.get("n_answer"), "n_branches": r.get("n_branches"),
-            "answer_ids": r.get("answer_ids"),
-            "ordered_by": r.get("ordered_by"),
-            # ★ 出处摘要：agent 被允许起草内容 ⇒ 混合必须**报出来**，不藏
+            "answer_ids": r.get("answer_ids"), "ordered_by": r.get("ordered_by"),
             "provenance": _provenance(app, r.get("answer_ids") or []),
-            "nodes": nodes,                      # 顺序即内核顺序，原样
+            "nodes": nodes,
             "usage_enabled": app._usage_dir is not None and in_store}
 
 
+def _tool_remember(a: dict) -> dict:
+    """agent 往**自己的**私人语料写一个节点 —— 主体性的落点。
+
+    ⚠️ 只追加不覆写：同 id 已存在 ⇒ 不写、报原因（覆写就是改写自己的记忆）。
+    ⚠️ `filled_by` 照记：三类（人 / 模型 / 外部）分开可筛的纪律在这里落地。
+    ⚠️ 写完语料就变了 ⇒ 冻结透镜的指纹不符 ⇒ `orient` 报 stale。
+       **这是该有的行为**：材料一变，上一份认识作废。
+    """
+    corpus = a.get("corpus", "")
+    nodes, in_store = _corpus_dir(corpus)
+    if nodes is None or not in_store:
+        raise ValueError("只能往产品 store 下的私人语料写（内置语料只读）")
+    nid = str(a.get("id") or "").strip()
+    if not nid:
+        raise ValueError("缺 id —— 记忆要有个能指回来的名字")
+    p = nodes / (_safe_name(nid) + ".md")
+    if p.exists():
+        return {"ok": False, "written": False,
+                "why": f"已有一条 id={nid} 的记忆 —— 只追加不覆写；要补充就换一个 id"}
+    fields = a.get("fields") or {}
+    body = str(a.get("body") or "")
+    filled_by = str(a.get("filled_by") or _actor(a))
+    lines = ["---", f'id: "{nid}"', f'filled_by: "{filled_by}"',
+             f'remembered_at: "{datetime.now().isoformat(timespec="seconds")}"']
+    for k in sorted(fields):
+        lines.append(f"{k}: {json.dumps(fields[k], ensure_ascii=False)}")
+    lines += ["---", "", body.rstrip() + chr(10)]
+    tmp = p.with_suffix(".tmp")
+    io.open(tmp, "w", encoding="utf-8", newline="\n").write(chr(10).join(lines))
+    os.replace(tmp, p)                       # 原子替换：不留半份
+    return {"ok": True, "written": True, "path": str(p), "id": nid,
+            "filled_by": filled_by,
+            "note": "语料变了 ⇒ 透镜指纹可能不符，下次 orient 会报 stale"}
+
+
 def _tool_drill(a: dict) -> dict:
+    """下钻一支 = 这一次「有用」的真实信号。agent 代钻与人的下钻同权。"""
     corpus = a.get("corpus", "")
     app, in_store = _app(corpus)
     req = list(a.get("require") or [])
@@ -237,97 +340,63 @@ def _tool_drill(a: dict) -> dict:
     did = a.get("did", "")
     r = app.query({"require": req, "forbid": forb})
     d = app.drill(did, req, forb)
-    # ★ agent 的下钻**算**「有用」（用户 2026-10-24 定）—— 与人的下钻同权。
-    #   代价：倾向会带上 agent 的翻译口味。兜底不是「不算」，是**可分解**：
-    #   谁钻的、钻了什么，落在调用日志里，`usage_status` 报占比。
-    #   ⇒ 人能看见「我的透镜什么时候被换成了 agent 的」，并能接管翻译层。
-    _log_call("drill", a, _actor(a),
-              {"did": did, "qfp": app._last_qfp, "recorded": d.get("recorded")})
+    # ★ qfp 进**返回**（调用方要看「这一钻属于哪次查询」），日志由调度器
+    #   统一记 —— 早先工具内部也记一次 ⇒ 同一次调用两行，S11 抓到。
     return {"ok": True, "corpus": app.corpus_name, "did": did,
-            "actor": _actor(a),
+            "actor": _actor(a), "qfp": app._last_qfp,
             "recorded": d.get("recorded"), "record_note": d.get("record_note"),
             "parent": d.get("parent"), "children": d.get("children"),
             "usage_enabled": app._usage_dir is not None and in_store}
 
 
-def _tool_usage_status(a: dict) -> dict:
-    corpus = a.get("corpus", "")
-    app, in_store = _app(corpus)
-    if app._usage_dir is None or not in_store:
-        return {"ok": True, "usage_enabled": False,
-                "why": "这个语料不在产品 store 下（或不在 _data 形状里）——"
-                       "使用记录不启用。内置语料只读，同样不写"}
-    from ldv.tools import usage_store as US
-
-    out = {"ok": True, "usage_enabled": True,
-           "corpus": app.corpus_name, **US.status(app._usage_dir)}
-    # ★ 演员分解：正式记录里多少条来自 agent 声明的下钻。
-    #   join 键 = (qfp, did) —— 调用日志与内核 usage 记录两边都有。
-    #   ⚠️ 这是**读数**不是判据：没有阈值、不打分、不拦截。它只回答
-    #      「我的次序有多少是 agent 的口味」—— 一个必须能问的问题。
-    agent_q = set()
-    if CALL_LOG.is_file():
-        for line in io.open(CALL_LOG, encoding="utf-8"):
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            # ★ 只收 **actor 声明为 agent** 的下钻 —— 第一版忘了过滤，
-            #   结果「人声明的下钻」也被算成 agent 的（分解失去意义）。
-            if row.get("tool") == "drill" and row.get("actor") == "agent":
-                agent_q.add((str(row.get("summary", {}).get("qfp", "")),
-                             str(row.get("summary", {}).get("did", ""))))
-    rows = US.load(app._usage_dir)
-    n_agent = sum(1 for r in rows if (r.get("qfp", ""), r.get("did", "")) in agent_q)
-    out["actor_split"] = {"记录数": len(rows), "agent 声明的下钻": n_agent,
-                          "其余（人 / 未声明）": len(rows) - n_agent,
-                          "note": "actor 是调用方**声明**的，服务器不验（同 filled_by）"}
-    return out
-
-
 TOOLS = [
-    {"name": "vocabulary", "description": "语料的词汇表（全部可用键）。查询只能用这些键。",
+    {"name": "orient",
+     "description": "「我记得」—— 私人语料 / 冻结的透镜（理由+指纹+是否过期）/ "
+                    "使用记录 / 最近几次动作。会话开始调一次。",
      "inputSchema": {"type": "object",
                      "properties": {"corpus": {"type": "string",
                                                "description": "语料名字或路径；空 = 内置 36 项"}}}},
-    {"name": "propose_spec", "description": "存一个候选声明（方向函数 + 参数 + 理由）。未冻结，不是系统输入。",
+    {"name": "ask",
+     "description": "把问题翻成键，在划分树上查一支。返回支序（原样）+ 查询式 + "
+                    "透镜指纹 + 出处摘要。第一次可带 lens（带理由）自动冻结。",
      "inputSchema": {"type": "object",
-                     "properties": {"corpus": {"type": "string"},
-                                    "spec": {"type": "object"},
-                                    "rationale": {"type": "string"},
-                                    "generated_by": {"type": "string"}},
-                     "required": ["spec", "rationale"]}},
-    {"name": "freeze_spec", "description": "把候选冻结成唯一声明。首次使用即冻结；已冻结需显式 force。",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "require": {"type": "array", "items": {"type": "string"}},
+                         "forbid": {"type": "array", "items": {"type": "string"}},
+                         "lens": {"type": "object",
+                                  "description": "方向函数声明，如 {\"插件\": \"keyset\"}；"
+                                                 "首次使用自动冻结"},
+                         "rationale": {"type": "string",
+                                       "description": "为什么选这个透镜（必填才能冻）"},
+                         "plugin": {"type": "string",
+                                    "description": "临时覆盖透镜里的方向函数"}},
+                     "required": ["require"]}},
+    {"name": "remember",
+     "description": "往自己的私人语料写一个节点（只追加不覆写，filled_by 照记）。",
      "inputSchema": {"type": "object",
-                     "properties": {"corpus": {"type": "string"},
-                                    "candidate_id": {"type": "string"},
-                                    "force": {"type": "boolean"}},
-                     "required": ["candidate_id"]}},
-    {"name": "spec_status", "description": "冻结状态 + 是否过期（语料指纹不符）+ 候选数。",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "id": {"type": "string"},
+                         "fields": {"type": "object"},
+                         "body": {"type": "string"},
+                         "filled_by": {"type": "string"}},
+                     "required": ["id", "fields", "body"]}},
+    {"name": "drill",
+     "description": "下钻一支 = 「这一支有用」。agent 代钻与人的下钻同权，"
+                    "actor 默认 agent（可声明 human）。",
      "inputSchema": {"type": "object",
-                     "properties": {"corpus": {"type": "string"}}}},
-    {"name": "query", "description": "在划分树上查一支。键必须先过词汇表；支序原样返回。",
-     "inputSchema": {"type": "object",
-                     "properties": {"corpus": {"type": "string"},
-                                    "require": {"type": "array", "items": {"type": "string"}},
-                                    "forbid": {"type": "array", "items": {"type": "string"}},
-                                    "plugin": {"type": "string",
-                                               "description": "覆盖声明里的方向函数"}}}},
-    {"name": "drill", "description": "下钻一支 = 这一次「有用」的真实信号（进使用记录）。",
-     "inputSchema": {"type": "object",
-                     "properties": {"corpus": {"type": "string"},
-                                    "did": {"type": "string"},
-                                    "require": {"type": "array", "items": {"type": "string"}},
-                                    "forbid": {"type": "array", "items": {"type": "string"}}},
-                     "required": ["did"]}},
-    {"name": "usage_status", "description": "两层记忆现状：正式记录 / 缓冲批次 / 覆盖方向。",
-     "inputSchema": {"type": "object",
-                     "properties": {"corpus": {"type": "string"}}}},
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "did": {"type": "string"},
+                         "require": {"type": "array", "items": {"type": "string"}},
+                         "forbid": {"type": "array", "items": {"type": "string"}},
+                         "actor": {"type": "string"}},
+                     "required": ["did", "require"]}},
 ]
 
-_IMPL = {"vocabulary": _tool_vocabulary, "propose_spec": _tool_propose_spec,
-         "freeze_spec": _tool_freeze_spec, "spec_status": _tool_spec_status,
-         "query": _tool_query, "drill": _tool_drill, "usage_status": _tool_usage_status}
+_IMPL = {"orient": _tool_orient, "ask": _tool_ask,
+         "remember": _tool_remember, "drill": _tool_drill}
 
 
 # ── JSON-RPC 骨架（零依赖：手写，不引第三方） ───────────────────────────────
@@ -371,11 +440,14 @@ def _handle(msg: dict) -> None:
             return
         try:
             out = fn(args)
-            # ★ 每次调用都落日志（不只是 drill）—— agent 的审计轨迹要完整，
-            #   不能只记「有副作用的那几次」。summary 取**结果的形状**，不取全文。
+            # ★ 每次调用落**一行**日志（不许重复 —— 早先 drill 内部也记一次，
+            #   同一次调用两行，S11 抓到）。summary 取结果的形状，不取全文。
+            #   `qfp` / `did` 只有 drill 返回 ⇒ 放进 summary，
+            #   `actor_split` 的 join 键 (qfp, did) 才凑得齐。
             _log_call(name, args, _actor(args),
                       {"ok": out.get("ok"), "n_answer": out.get("n_answer"),
                        "n_branches": out.get("n_branches"),
+                       "qfp": out.get("qfp"), "did": out.get("did"),
                        "isError": not out.get("ok", True)})
             _result(mid, {"content": [{"type": "text",
                                        "text": json.dumps(out, ensure_ascii=False,
