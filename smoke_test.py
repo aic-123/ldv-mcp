@@ -134,9 +134,10 @@ def main() -> int:
 
         r = c.call("tools/list")
         names = [t["name"] for t in (r.get("result") or {}).get("tools", [])]
-        chk("S2", "★ 工具面 = 四件动作 + 三件能力（真人零动作，能力不缩水）",
+        # ★ 2026-10-24 加 remember_answer（答案编进树）⇒ 四件动作 + **四件**能力
+        chk("S2", "★ 工具面 = 四件动作 + 四件能力（真人零动作，能力不缩水）",
             names == ["orient", "ask", "remember", "drill",
-                      "derive", "undo", "next"], f"{names}")
+                      "derive", "remember_answer", "undo", "next"], f"{names}")
 
         o = tool(c, "orient", {"corpus": "mine"})
         keys = o["out"].get("keys") or []
@@ -571,11 +572,35 @@ def main() -> int:
             f"｜空答案：{str(q2['out'].get('items_note'))[:30]}"
             f"｜超界：{str(d3['out'].get('why'))[:26]}")
 
+        # ── S32 答案缓存：编进树 ⇒ 命中不用再问 agent；语料变 ⇒ 作废 ────
+        # 用户 2026-10-24：先查树，找不到再问 agent，答完编回树。
+        ra = tool(c, "remember_answer", {
+            "corpus": "mine", "require": ["type=立场"],
+            "answer": "三条立场：DAPO 的问题在损失聚合与裁剪上界；"
+                      "长度惩罚与 clip-higher 是候选处置。",
+            "source": ["stance-0001"]})
+        hit = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
+        ca = hit["out"].get("cached_answer") or {}
+        # 语料一变 ⇒ 旧缓存必须作废（不是静默沿用）
+        tool(c, "remember", {"corpus": "mine", "id": "cache-probe",
+                             "fields": {"type": "笔记"}, "body": "加一条，让指纹变。"})
+        stale = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
+        chk("S32", "★ 答案缓存：编进树后同类问题**先命中**（from_cache + filled_by）；"
+                   "语料指纹一变 ⇒ 明说过期、不采用",
+            ra["out"].get("written") is True
+            and ca.get("from_cache") is True and ca.get("filled_by") == "agent"
+            and "长度惩罚" in str(ca.get("answer"))
+            and "过期" in str(stale["out"].get("cache_note"))
+            and stale["out"].get("cached_answer") is None,
+            f"写入 {ra['out'].get('key')}｜命中 {ca.get('from_cache')}"
+            f"｜filled_by={ca.get('filled_by')}"
+            f"｜语料变后：{str(stale['out'].get('cache_note'))[:30]}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S31）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S32）")
     return 1 if FAIL else 0
 
 

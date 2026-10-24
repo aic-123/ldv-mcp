@@ -457,6 +457,24 @@ def _tool_ask(a: dict) -> dict:
     elif not items:
         out["items_note"] = ("这一格是空的 —— 要么材料里真没有，要么**这个维度不存在**；"
                              "后者交给 agent 补（derive 一个维度 / 换问法），不许猜")
+    # ★ 答案缓存：先查树（级联的「便宜那一级」）。命中 ⇒ 不必再问 agent。
+    #   ⚠️ 命中必须**明说**：from_cache=true + filled_by: agent，
+    #      不混在材料答案里 —— 那是语义缓存的已知坑（相似问题误命中）。
+    if nodes_dir is not None:
+        cached, why = _cache_lookup(app, nodes_dir, req, forb,
+                                    plugin or "keyset")
+        if cached:
+            out["cached_answer"] = {
+                "from_cache": True, "answer": cached.get("answer"),
+                "filled_by": cached.get("filled_by"),
+                "generated_by": cached.get("generated_by"),
+                "derived_from": cached.get("derived_from"),
+                "source": cached.get("source") or [],
+                "key": cached.get("qfp"),
+                "note": ("这是**上次编进树的回答**，不是新材料 —— "
+                         "要更新就重新 remember_answer（同键覆写）")}
+        elif why:
+            out["cache_note"] = why
     if a.get("structure"):
         out.update({"nodes": nodes, "answer_ids": ids_sorted,
                     "n_branches": r.get("n_branches"),
@@ -646,6 +664,102 @@ def _tool_derive(a: dict) -> dict:
                                   "要覆盖全库请重新 derive（force）")},
             "note": "材料没动（指纹不变、透镜仍有效），但词汇表多了这些键 ⇒ "
                     "答案可能变。删掉这个文件即逐字回到原状"}
+
+
+# ── 答案缓存（2026-10-24 用户定：先查树，不命中才问 agent，答完编回树）────
+#
+# ★ 这是**级联 + 编译**：FrugalGPT(2023) 的 cascade（便宜先上，不行才升级）
+#   + Soar 的 chunking（把求解经验编进长期记忆，避免重解）。
+# ★ 模型代填**允许**（用户 2026-10-24 重申，README 第 75 行早有），但必须标记：
+#   filled_by: agent + derived_from，永不进「已验证」那一桶。
+# ★ 过期失效：键里带**语料指纹** —— 指纹一变，缓存整体作废（与 derive 的透镜同款）。
+# ★ 命中要明说：from_cache=true，不混在材料答案里。
+# ★ 可回滚：删掉那个 json 文件即逐字回到原状（与 derive 的 sidecar 同款）。
+def _answers_dir(nodes: Path) -> Path:
+    d = nodes.parent / "answers"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cache_key(require, forbid, plugin: str) -> str:
+    """键 = **问题本身**（plugin + require + forbid），**不含语料指纹**。
+
+    ⚠️ 为什么不含：含了的话，语料一变就变成「找不到文件」——
+      那与「从来没有过缓存」长得一样，用户看不出「有缓存但过期了」。
+      不含 ⇒ 同一个问题永远落到同一个文件，过期写在**文件里**，
+      查找时比对 ⇒ 明说「已过期，不采用」（与 derive 的透镜 stale 同款）。
+    """
+    import hashlib
+
+    raw = "|".join([plugin, ",".join(sorted(require)), ",".join(sorted(forbid))])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _tool_remember_answer(a: dict) -> dict:
+    """把 agent 的一次回答**编进树**（下次同类问题先命中这里，不再问 agent）。
+
+    ★ 用户 2026-10-24：「先查树，找不到再去问 agent 要」+「将过程编入进方向树中」。
+    ★ 键 = 语料指纹 + require/forbid + 插件 ⇒ 语料一变，旧缓存整体作废
+      （不是逐条判断，是一把失效 —— 与 `derive` 的透镜 stale 同款）。
+    ★ `answer` 是 agent 写的文本，**不是材料**：带 filled_by: agent +
+      derived_from，永不标「已验证」。
+    """
+    corpus = a.get("corpus", "")
+    app, _ = _app(corpus)
+    nodes_dir, _ = _corpus_dir(corpus)
+    if nodes_dir is None:
+        return {"ok": False, "why": "只在 store 里的语料上可用"}
+    req = list(a.get("require") or [])
+    forb = list(a.get("forbid") or [])
+    plugin = str(a.get("plugin") or "keyset")
+    V.check_plugin(plugin)
+    chk = V.check_keys(app.all_keys, req, forb)
+    if not chk["ok"]:
+        return {"ok": False, "out_of_structure": True, **chk}
+    answer = str(a.get("answer") or "").strip()
+    if not answer:
+        raise ValueError("缺 answer —— 要编进树的那段回答")
+    src = [str(x) for x in (a.get("source") or [])]
+    for s in src:
+        if s not in app.nodes:
+            raise S.SpecError(f"来源里没有这一项：{s}")
+
+    fp = app.fingerprint()
+    key = _cache_key(req, forb, plugin)
+    doc = {"qfp": key, "corpus_fp": fp, "plugin": plugin,
+           "require": sorted(req), "forbid": sorted(forb),
+           "answer": answer, "source": src,
+           "filled_by": "agent", "generated_by": _actor(a),
+           "derived_from": ("agent 的一次回答（不是材料）；来源条目见 source —— "
+                            "语料指纹一变，这条整体作废"),
+           "created": datetime.now().isoformat(timespec="seconds")}
+    p = _answers_dir(nodes_dir) / f"{key}.json"
+    L.create_exclusive(p, json.dumps(doc, ensure_ascii=False, indent=1))
+    return {"ok": True, "written": True, "key": key, "path": str(p),
+            "corpus_fingerprint": fp,
+            "note": ("答案已编进树：语料指纹不变时，同类问题先命中这里，"
+                     "不必再问 agent；**指纹一变整体作废**；删掉这个文件即回退。"
+                     "它带 filled_by: agent，**永不进「已验证」**")}
+
+
+def _cache_lookup(app, nodes_dir: Path, req, forb, plugin: str):
+    """命中 ⇒ (doc, path)；没命中或过期 ⇒ (None, 原因)。"""
+    if nodes_dir is None:
+        return None, ""
+    fp = app.fingerprint()
+    key = _cache_key(req, forb, plugin)
+    p = _answers_dir(nodes_dir) / f"{key}.json"
+    if p.is_file():
+        try:
+            doc = json.loads(io.open(p, encoding="utf-8").read())
+        except (OSError, ValueError):
+            return None, "缓存文件读不出（当没命中）"
+        if doc.get("corpus_fp") == fp:
+            return doc, ""
+        return None, (f"语料指纹变了（缓存记的是 {doc.get('corpus_fp')}、"
+                      f"现在是 {fp}）⇒ 这条**已过期**，不采用")
+    # 旧指纹的缓存还在但键不同 ⇒ 找不到，就报「没有」
+    return None, ""
 
 
 def _tool_undo(a: dict) -> dict:
@@ -840,6 +954,22 @@ TOOLS = [
                          "force": {"type": "boolean",
                                    "description": "同名维度已存在时，显式覆盖"}},
                      "required": ["name", "values", "rationale", "derived_from"]}},
+    {"name": "remember_answer",
+     "description": ("把 agent 的一次回答**编进树**（下次同类问题先命中这里，不必再问 "
+                     "agent）。键 = 语料指纹 + require/forbid + 插件 ⇒ 语料一变"
+                     "整体作废；带 filled_by: agent，永不进「已验证」"),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "require": {"type": "array", "items": {"type": "string"}},
+                         "forbid": {"type": "array", "items": {"type": "string"}},
+                         "plugin": {"type": "string"},
+                         "answer": {"type": "string",
+                                    "description": "要编进树的那段回答（agent 写的）"},
+                         "source": {"type": "array", "items": {"type": "string"},
+                                    "description": "这次回答依据哪些条目（可空）"},
+                         "actor": {"type": "string"}},
+                     "required": ["answer"]}},
     {"name": "undo",
      "description": "反事实：删掉一个项，看答案丢什么、哪些方向少成员，然后**原样恢复**"
                     "（指纹逐字比对过才报成功）。材料一个字节没动。",
@@ -867,7 +997,8 @@ TOOLS = [
 
 _IMPL = {"orient": _tool_orient, "ask": _tool_ask,
          "remember": _tool_remember, "drill": _tool_drill,
-         "derive": _tool_derive, "undo": _tool_undo, "next": _tool_next}
+         "derive": _tool_derive, "remember_answer": _tool_remember_answer,
+         "undo": _tool_undo, "next": _tool_next}
 
 
 # ── JSON-RPC 骨架（零依赖：手写，不引第三方） ───────────────────────────────
