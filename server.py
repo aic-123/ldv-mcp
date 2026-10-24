@@ -394,6 +394,69 @@ def _tool_drill(a: dict) -> dict:
             "usage_enabled": app._usage_dir is not None and in_store}
 
 
+def _tool_read(a: dict) -> dict:
+    """读**内容** —— 答案的标题与正文（有界，**截断必报**）。
+
+    ★ 为什么要有它（2026-10-24 用户点出的硬缺口）：`ask` 只给**位置**
+      （did / must / mustnot / coverage / answer_ids），不给标题与正文。
+      ⇒ agent 能说「这三条在 D9 这一支」，答不了「这三条说了什么」——
+      那正是「只能定位的工具」与「能答话的私人助手」之间的那道坎。
+    ★ 三种取法（顺序即优先级）：`ids` 直接给 → `did` 取那一支的成员 →
+      `require`/`forbid` 取答案集。**顺序原样**（排序即推荐，这里不排）。
+    ⚠️ 截断**必须明说**（每项 `truncated` + 汇总 `note`）：
+      「读全了」与「读了一半」在答案里长得一样，正是本项目反复踩的那类错。
+    """
+    corpus = a.get("corpus", "")
+    app, in_store = _app(corpus)
+    limit = max(1, int(a.get("limit") or 5))
+    max_chars = max(1, int(a.get("max_chars") or 2000))
+    ids = [str(x) for x in (a.get("ids") or [])]
+    did = str(a.get("did") or "").strip()
+
+    if not ids and did:
+        plugin = str(a.get("plugin") or "keyset")
+        V.check_plugin(plugin)
+        k = app.ensure(plugin)
+        try:
+            d = k.direction(did)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": f"没有这个节点 {did!r}：{e}"}
+        ids = sorted(k.members_of(d))
+    if not ids:
+        req = list(a.get("require") or [])
+        forb = list(a.get("forbid") or [])
+        chk = V.check_keys(app.all_keys, req, forb)
+        if not chk["ok"]:
+            return {"ok": False, "out_of_structure": True, **chk}
+        ids = sorted(app.answer_set(frozenset(req), frozenset(forb)))
+
+    unknown = [i for i in ids if i not in app.nodes]
+    if unknown:
+        raise S.SpecError(f"语料里没有这些项：{unknown[:5]}"
+                          + (f"…共 {len(unknown)} 个" if len(unknown) > 5 else ""))
+    shown = ids[:limit]
+    items = []
+    for nid in shown:
+        node = app.nodes[nid]
+        f = node.fields or {}
+        body = (node.body or "").strip()
+        items.append({"id": nid, "title": str(f.get("title", "") or ""),
+                      "filled_by": str(f.get("filled_by", "") or ""),
+                      "evidence_status": str(f.get("evidence_status", "") or ""),
+                      "scope": str(f.get("scope", "") or ""),
+                      "source": f.get("source", ""),
+                      "body": body[:max_chars],
+                      "truncated": len(body) > max_chars,
+                      "body_chars": len(body)})
+    n_cut = sum(1 for x in items if x["truncated"])
+    left = len(ids) - len(items)
+    return {"ok": True, "corpus": app.corpus_name,
+            "n_matched": len(ids), "n_returned": len(items),
+            "items": items, "truncated_items": n_cut,
+            "note": (f"共 {len(ids)} 项，返回前 {len(items)} 项"
+                     + (f"；其中 {n_cut} 项正文截到 {max_chars} 字" if n_cut else "")
+                     + (f"；**还有 {left} 项没返回**，调 limit 或缩小查询" if left else ""))}
+
 def _tool_derive(a: dict) -> dict:
     """agent **敲定一个派生维度** —— 词汇表里没有的轴，它自己建。
 
@@ -593,6 +656,20 @@ TOOLS = [
                          "forbid": {"type": "array", "items": {"type": "string"}},
                          "actor": {"type": "string"}},
                      "required": ["did", "require"]}},
+    {"name": "read",
+     "description": "读**内容** —— 标题与正文（有界；截断必报）。"
+                    "三种取法：ids / did / require+forbid；顺序原样不重排。",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "ids": {"type": "array", "items": {"type": "string"}},
+                         "did": {"type": "string", "description": "取这一支的成员"},
+                         "require": {"type": "array", "items": {"type": "string"}},
+                         "forbid": {"type": "array", "items": {"type": "string"}},
+                         "plugin": {"type": "string"},
+                         "limit": {"type": "integer", "description": "最多几项（默认 5）"},
+                         "max_chars": {"type": "integer",
+                                        "description": "每项正文最多几字（默认 2000）"}}}},
     {"name": "derive",
      "description": "agent 敲定一个**派生维度**（词汇表里没有的轴，它自己建）—— "
                     "不写回材料，删 sidecar 即逐字回退。必填理由与「从哪来」。",
@@ -634,7 +711,7 @@ TOOLS = [
                                    "description": "每档最多列几条（默认 5）"}}}},
 ]
 
-_IMPL = {"orient": _tool_orient, "ask": _tool_ask,
+_IMPL = {"orient": _tool_orient, "ask": _tool_ask, "read": _tool_read,
          "remember": _tool_remember, "drill": _tool_drill,
          "derive": _tool_derive, "undo": _tool_undo, "next": _tool_next}
 
