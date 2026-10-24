@@ -40,8 +40,13 @@ def check_keys(all_keys: Sequence[str], require: Sequence[str],
     suggest = {k: difflib.get_close_matches(k, sorted(known), n=3, cutoff=0.5)
                for k in unknown}
     return {"ok": False, "unknown": unknown, "suggest": suggest,
+            # ★ 2026-10-24 用户定：**不报「拒收」、不打断用户** ——
+            #   缺口交给 agent 去补。这里只给 agent 一句「你能怎么补」。
+            "can_agent_fill": True,
+            "next_step": ["derive 一个维度（把这类取值建成可查的轴，带理由与来源）",
+                          "或映射到 vocabulary 里已有的键（换个问法）"],
             "why": "这些键不在词汇表里 —— 可能是拼错了；若确实没有这个维度，"
-                   "那是「超出结构」，请人介入，本层不猜"}
+                   "agent 自己补一个就行（derive），不用打断用户"}
 
 
 def check_plugin(name: str) -> None:

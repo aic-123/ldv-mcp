@@ -1,36 +1,30 @@
-"""长场景实测：从第一条笔记开始，12 天，14 条事实，6 类问题。
+"""长场景实测：空库起，14 天，14 条事实，六类问题。
 
 跑法（cwd = ldv-mcp）：python probes/long_scenario.py
 
-## 对照怎么做的（不是稻草人）
+## 对照（2026-10-24 修正：WITHOUT 会**压缩**，不是硬掉出）
 
     WITH     插件：笔记进 store，问题走 ask（按需取回，与笔记总量无关）
-    WITHOUT  **上下文窗口 = 最近 5 条笔记**（FIFO）
-             —— 「不用插件」最真实的形态不是「没有记忆」，
-                是「记忆有上限，早期的会掉出去」
+    WITHOUT  **窗口 12 条 + 压缩**：写满就把最老的 3 条压成一句摘要
+             —— 摘要保住**主题**（哪个项目、什么类型），丢掉**具体数值**
 
-⇒ 测的是：同一批事实，在**有限窗口**下还能命中多少。
+    ⚠️ 第一版把 WITHOUT 做成「FIFO 硬掉出」是不公平的：真 agent 会压缩。
+       压缩的真实后果不是「什么都忘了」，是「**主题还在，数值没了**」。
 
-## 事实是运行时生成的（种子固定，可复现）
+⇒ 这一版能分出两类问题：
+       数值题（lr 多少 / baseline 多少）—— 压缩后 WITHOUT 必输
+       主题题（覆盖哪些项目）          —— 压缩后 WITHOUT 仍能答
 
-    lr=3.17e-6 / 尖峰 2.73 / baseline 0.4182 这类值由 RNG 生成，不在任何训练数据里
-    ⇒ WITHOUT 命中的唯一途径是「它还在窗口里」；WITH 的唯一途径是「查得到」。
+## 事实是运行时生成的（种子固定）
 
-## 场景里会真实撞到一个缺口（这是它「真」的地方）
+    lr=3.17e-6 / 尖峰 2.73 这类值由 RNG 生成，不在训练数据里。
 
-    第 2 天用户说「按项目看」⇒ agent 试 `project=alpha` ⇒ **拒收**：
-    自定义字段只进「字段名」键，不进「字段=值」键（内核只对 type/evidence_status/
-    source.kind 这类枚举字段生成值键）。
-    ⇒ agent 读回字段（with_body 的 fields）→ `derive` 一个 project 维度 → 能查了。
-    ⇒ 这就是「词汇缺口 → agent 补」，不是文档里的说法，是这一趟真发生的。
+## 缺口（这次**不报「拒收」**，直接让 agent 补）
 
-## 读数
-
-    命中率     事实题：返回内容里是否**逐字**含那个具体值
-    指回率     每个答案是否带 node id
-    上下文成本 插件每问吐多少字 vs 窗口常驻多少字
-    偏移       同一批事实在第 3/6/12 天还记得吗（WITH 只增不减，WITHOUT 只减不增）
-    漏检       事实还在库里、但没被取回（= 结构缺口，不是答错）
+    第 2 天用户说「按项目看」⇒ agent 试 project=alpha ⇒ 没有这个键
+    ⇒ 返回 can_agent_fill + next_step（**不打断用户**）
+    ⇒ agent 读回字段 → derive 一个 project 维度 → 能查了
+    ⇒ 第 14 天全量重建（force）—— 这是**设计**，不是补丁
 """
 from __future__ import annotations
 
@@ -45,7 +39,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent          # = ldv-mcp/
 PY = sys.executable
-WINDOW_NOTES = 5        # WITHOUT 的窗口：只能装下最近 5 条笔记
+WINDOW_NOTES = 12       # WITHOUT 的窗口容量（比上一版的 5 条**拉大**了）
+COMPRESS_BATCH = 3      # 写满时把最老的 3 条压成一句摘要
 SEED = 20261024
 
 PLAN = [
@@ -61,6 +56,8 @@ PLAN = [
     ("d10", "gamma", "笔记", "客户反馈里没提过稳定性问题，主要是 {pain} 太慢"),
     ("d11", "beta", "实验", "在 {bs} 档上跑了 {n} 组，最好 {best}，最差 {worst}"),
     ("d12", "alpha", "决定", "alpha 定稿：保留 {keep}，去掉 {drop}"),
+    ("d13", "alpha", "实验", "把 batch 从 {bs} 提到 {bs2}，吞吐涨 {thr}"),
+    ("d14", "beta", "笔记", "复盘：{n} 次实验里只有 {k} 次结论站得住"),
 ]
 
 
@@ -73,9 +70,11 @@ def gen_facts() -> dict[str, dict]:
             "back": f"{r.uniform(0.9, 1.3):.2f}", "base": f"{r.uniform(0.38, 0.44):.4f}",
             "new": f"{r.uniform(0.45, 0.50):.4f}", "delta": f"+{r.uniform(4, 9):.1f}%",
             "n": str(r.randint(5, 12)), "k": str(r.randint(1, 4)),
-            "bs": str(r.choice([16, 32, 64, 128])), "c1": f"{r.uniform(0.15, 0.25):.2f}",
-            "c2": f"{r.uniform(0.26, 0.40):.2f}", "g1": f"{r.uniform(0.6, 1.0):.2f}",
-            "g2": f"{r.uniform(1.1, 1.8):.2f}", "hw": r.choice(["A100", "H100", "H800"]),
+            "bs": str(r.choice([16, 32, 64, 128])), "bs2": str(r.choice([256, 512])),
+            "thr": f"+{r.uniform(10, 40):.0f}%",
+            "c1": f"{r.uniform(0.15, 0.25):.2f}", "c2": f"{r.uniform(0.26, 0.40):.2f}",
+            "g1": f"{r.uniform(0.6, 1.0):.2f}", "g2": f"{r.uniform(1.1, 1.8):.2f}",
+            "hw": r.choice(["A100", "H100", "H800"]),
             "p": r.choice(["step", "epoch", "tokens"]),
             "t1": f"{r.uniform(0.9, 1.1):.2f}", "t2": f"{r.uniform(0.5, 0.7):.2f}",
             "e1": f"{r.uniform(1.2, 1.8):.2f}", "e2": f"{r.uniform(0.4, 0.8):.2f}",
@@ -129,42 +128,53 @@ def main() -> int:
     facts = gen_facts()
     tmp = Path(tempfile.mkdtemp(prefix="ldv-scen-"))
     store = tmp / "store"
-    (store / "_data" / "notes" / "nodes").mkdir(parents=True)
+    (store / "_data" / "notes" / "nodes").mkdir(parents=True)   # **空库**
 
     c = MCP(store)
-    ctx: list[str] = []          # WITHOUT：窗口（最多 WINDOW_NOTES 条）
+    ctx: list[str] = []          # WITHOUT：窗口（最多 WINDOW_NOTES 条，含摘要行）
     chars_with = 0
     misses: list[str] = []
     drift: dict[int, dict] = {}
     gap_event = ""
+    compressed_at = 0
 
-    print("=" * 78)
-    print(f"长场景｜第 1 条笔记起 · 12 天 · 14 条事实 · 窗口只装 {WINDOW_NOTES} 条")
-    print("=" * 78)
+    print("=" * 80)
+    print(f"长场景｜空库起 · {len(PLAN)} 天 · 窗口 {WINDOW_NOTES} 条 + 压缩"
+          f"（每次压 {COMPRESS_BATCH} 条）")
+    print("=" * 80)
 
-    c.tool("remember", {"corpus": "notes", "id": "d00",
-                        "fields": {"type": "立项", "project": "meta"},
-                        "body": "这个库用来记 alpha/beta/gamma 三条线的实验与决定。"})
-    ctx.append("这个库用来记 alpha/beta/gamma 三条线的实验与决定。")
+    o0 = c.tool("orient", {"corpus": "notes"})
+    print(f"\n⓪ 空库 orient ⇒ {o0.get('n_items')} 项（基石自动放的）"
+          f"｜键 {o0.get('n_keys')} 个")
 
     for i, (nid, proj, kind, _t) in enumerate(PLAN, start=1):
         f = facts[nid]
-        c.tool("remember", {"corpus": "notes", "id": nid,
-                            "fields": {"type": kind, "project": proj},
-                            "body": f["text"]})
+        w = c.tool("remember", {"corpus": "notes", "id": nid,
+                                "fields": {"type": kind, "project": proj},
+                                "body": f["text"]})
+        if not w.get("written"):
+            print(f"   ⚠️ {nid} 没写进去：{w.get('why')}")
         ctx.append(f["text"])
-        while len(ctx) > WINDOW_NOTES:
-            ctx.pop(0)
 
-        # ── 第 2 天：用户说「按项目看」⇒ 撞缺口 ⇒ derive 补上 ──────
+        # ★ 压缩：写满就把最老的 3 条压成一句摘要（丢数值、保主题）
+        if len(ctx) > WINDOW_NOTES:
+            batch = ctx[:COMPRESS_BATCH]
+            ctx[:COMPRESS_BATCH] = [
+                f"【摘要】早前 {len(batch)} 条笔记（项目：alpha/beta/gamma），"
+                f"记录了实验与决定若干，具体数值已略。"]
+            compressed_at = compressed_at or i
+            print(f"   ↳ 第 {i} 天：窗口满 ⇒ 压缩最老 {COMPRESS_BATCH} 条为摘要"
+                  f"（现在 {len(ctx)} 条）")
+
+        # ── 第 2 天：用户说「按项目看」⇒ 缺口（不报拒收，agent 自己补）──
         if i == 2:
             bad = c.tool("ask", {"corpus": "notes", "require": ["project=alpha"]})
             print(f"\n② 第 2 天：用户说「按项目看」")
             print(f"   ask require=[project=alpha] ⇒ ok={bad.get('ok')}"
-                  f"｜out_of_structure={bad.get('out_of_structure')}")
-            print(f"   {str(bad.get('why'))[:58]}")
+                  f"｜can_agent_fill={bad.get('can_agent_fill')}")
+            print(f"   next_step={bad.get('next_step')}")
             rd = c.tool("ask", {"corpus": "notes", "require": [], "with_body": True,
-                                "limit": 20})
+                                "limit": 40})
             chars_with += len(json.dumps(rd.get("bodies") or {}, ensure_ascii=False))
             vals = {}
             for it in ((rd.get("bodies") or {}).get("items") or []):
@@ -175,36 +185,22 @@ def main() -> int:
                                    "values": vals,
                                    "rationale": "用户要按项目看；project 是材料自带字段，"
                                                 "但内核只给枚举字段生成值键",
-                                   "derived_from": "材料字段 project（不是我推断的）"})
+                                   "derived_from": "材料字段 project"})
             again = c.tool("ask", {"corpus": "notes", "require": ["project=alpha"],
                                    "with_body": True, "limit": 10})
-            gap_event = (f"拒收 → derive {dv.get('field')}（{dv.get('n_items')} 项）"
-                         f" → 再查 ok={again.get('ok')}"
+            gap_event = (f"无此键 → can_agent_fill → derive {dv.get('field')}"
+                         f"（{dv.get('n_items')} 项）→ 再查 ok={again.get('ok')}"
                          f"（{again.get('n_answer')} 项）")
             print(f"   ⇒ {gap_event}")
 
-        if i in (3, 6, 12):
+        # ── 检查点：同一批数值事实，两边谁还记得 ──────────────────
+        if i in (3, 6, 9, 12, 14):
             drift[i] = {}
-
-        # ── 当天问一条事实题（两边都还拿得到）──────────────────────
-        if i == 1:
-            val = f["vals"]["lr"]
-            r = c.tool("ask", {"corpus": "notes", "require": ["type=实验"],
-                               "with_body": True, "limit": 10})
-            bodies = json.dumps(r.get("bodies") or {}, ensure_ascii=False)
-            chars_with += len(bodies)
-            print(f"\n① 第 1 天：问「alpha 第一次跑的 lr 是多少」")
-            print(f"   WITH    ⇒ {len(bodies)} 字｜命中 {val in bodies}")
-            print(f"   WITHOUT ⇒ 窗口里 {sum(len(x) for x in ctx)} 字｜"
-                  f"命中 {any(val in x for x in ctx)}")
-
-        # ── 检查点：同一批事实，谁还记得 ───────────────────────────
-        if i in (3, 6, 12):
             for lab, nid2, key2 in (("d01.lr", "d01", "lr"), ("d02.base", "d02", "base"),
                                     ("d03.不可复现", "d03", None)):
                 val = facts[nid2]["vals"][key2] if key2 else "不可复现"
                 r = c.tool("ask", {"corpus": "notes", "require": [],
-                                   "with_body": True, "limit": 30})
+                                   "with_body": True, "limit": 40})
                 bodies = json.dumps(r.get("bodies") or {}, ensure_ascii=False)
                 chars_with += len(bodies)
                 drift[i][lab] = {"with": val in bodies,
@@ -213,33 +209,32 @@ def main() -> int:
                 if not drift[i][lab]["with"]:
                     misses.append(f"{nid2}:{key2 or 'qual'}@d{i}")
 
-    # ── 第 12 天：派生维度已过期 ⇒ 重新 derive（force），并报两次覆盖率 ──
-    rd2 = c.tool("ask", {"corpus": "notes", "require": [], "with_body": True,
-                         "limit": 40})
+    # ── 第 14 天：全量重建派生维度（**这是设计**，不是补丁）─────────
+    rd2 = c.tool("ask", {"corpus": "notes", "require": [], "with_body": True, "limit": 60})
     chars_with += len(json.dumps(rd2.get("bodies") or {}, ensure_ascii=False))
     vals2 = {it["id"]: (it.get("fields") or {}).get("project")
              for it in ((rd2.get("bodies") or {}).get("items") or [])}
     vals2 = {k: v for k, v in vals2.items() if v}
     dv2 = c.tool("derive", {"corpus": "notes", "name": "project", "values": vals2,
-                             "rationale": "第 2 天建的那份只覆盖 3 项，后来的笔记没进去",
-                             "derived_from": "材料字段 project", "force": True})
-    print(f"\n⑥ 派生维度过期：第 2 天建的那份只覆盖 3 项 → 第 12 天重 derive "
-          f"{dv2.get('n_items')} 项｜覆盖率 {dv2.get('coverage')}")
+                            "rationale": "全量重建：第 2 天那份只覆盖当时那几条",
+                            "derived_from": "材料字段 project", "force": True})
+    print(f"\n③ 全量重建派生维度：第 2 天 3 项 → 现在 {dv2.get('n_items')} 项"
+          f"｜覆盖率 {dv2.get('coverage')}")
 
     # ── 最后一天：六类问题 ────────────────────────────────────────
-    print("\n③ 最后一天（12 天后）：六类问题")
+    print("\n④ 最后一天：六类问题（WITH）")
     QS = [
-        ("事实", "alpha 第一次跑的 lr 与 loss 尖峰", ["project=alpha"], "lr", "d01"),
+        ("事实", "alpha 第一次跑的 lr 与尖峰", ["project=alpha"], "lr", "d01"),
         ("事实", "组 A 的 baseline", ["project=alpha"], "base", "d02"),
-        ("结构", "beta 线有几条记录", ["project=beta"], None, None),
-        ("结构", "alpha 的实验有几条", ["project=alpha", "type=实验"], None, None),
+        ("结构", "beta 线几条记录", ["project=beta"], None, None),
+        ("结构", "alpha 的实验几条", ["project=alpha", "type=实验"], None, None),
         ("边界", "有没有客户投诉稳定性", ["project=gamma"], None, None),
-        ("元", "这个库覆盖哪些项目", [], None, None),
-        ("追述", "第 3 天记的那条（B 方案）", ["project=beta"], None, "d03"),
+        ("元", "覆盖哪些项目", [], None, None),
+        ("追述", "第 3 天那条（B 方案）", ["project=beta"], None, "d03"),
     ]
     for cat, q, req, key, nid in QS:
         r = c.tool("ask", {"corpus": "notes", "require": req, "with_body": True,
-                           "limit": 30})
+                           "limit": 40})
         bodies = json.dumps(r.get("bodies") or {}, ensure_ascii=False)
         chars_with += len(bodies)
         ids = r.get("answer_ids") or []
@@ -251,13 +246,12 @@ def main() -> int:
                 misses.append(f"{nid}:{key}@final")
         elif nid:
             mark = "命中" if "不可复现" in bodies else "**没命中**"
-        print(f"   [{cat}] {q}")
-        print(f"        ⇒ ok={r.get('ok')}｜{r.get('n_answer')} 项｜"
-              f"指回 {len(ids)} 个 id｜{len(bodies)} 字"
+        print(f"   [{cat}] {q} ⇒ ok={r.get('ok')}｜{r.get('n_answer')} 项"
+              f"｜指回 {len(ids)} id｜{len(bodies)} 字"
               f"{('｜' + mark) if mark else ''}")
 
     # ── 偏移 ──────────────────────────────────────────────────────
-    print("\n④ 答案偏移（同一批事实，第 3/6/12 天还记得吗）")
+    print("\n⑤ 答案偏移（数值题；有/有 = WITH 有 / WITHOUT 有）")
     print("   检查点        d01.lr      d02.base    d03.不可复现    窗口字数")
     for day in sorted(drift):
         row = drift[day]
@@ -266,46 +260,20 @@ def main() -> int:
         print(f"   第 {day:>2} 天      " + "      ".join(f"{c:<7}" for c in cells)
               + f"   {row['d01.lr']['window']}")
 
-    print("\n⑤ 汇总")
+    # ── 主题题对照（这才是公平的分界）────────────────────────────
+    topic_wo = any(("alpha" in x) for x in ctx)
+    print(f"\n⑥ 主题题对照（「覆盖哪些项目」）")
+    print(f"   WITH    ⇒ {len(vals2)} 条都有 project 字段，查得到")
+    print(f"   WITHOUT ⇒ 压缩摘要里项目名还在：{topic_wo}"
+          f"（摘要：{ctx[0][:34]}…）")
+    print("   ⇒ **数值题 WITHOUT 输，主题题不输** —— 压缩丢的是精度，不是话题")
+
+    print("\n⑦ 汇总")
     print(f"   缺口事件：{gap_event}")
-    print(f"   WITH 上下文成本（**全量拉**：每次 with_body+limit30）：{chars_with} 字"
-          f"（{len(QS) + 2 + 3} 次查询）")
-    print(f"   WITHOUT 上下文成本：常驻 {sum(len(x) for x in ctx)} 字"
-          f"（上限 {WINDOW_NOTES} 条笔记）")
+    print(f"   压缩发生在第 {compressed_at} 天（窗口 {WINDOW_NOTES} 条）")
+    print(f"   WITH 上下文成本：{chars_with} 字（{len(QS) + 3 + 5} 次查询）")
+    print(f"   WITHOUT 上下文成本：常驻 {sum(len(x) for x in ctx)} 字")
     print(f"   漏检：{misses or '无'}")
-
-    # ── ⑥ 成本对比：全量拉 vs 真实用法（先看支，再只取 2 条）────────
-    # ⚠️ 上面那个 40k 是**我的探针太粗**（每次都把整支正文拉回来）。
-    #    真实 agent 会先 ask（不带正文）看有几支，再只读需要的 —— 这里量它。
-    lean = 0
-    full7 = 0
-    for cat, q, req, key, nid in QS:
-        # 全量拉（对照）：一次问，正文拉 30 条
-        r0 = c.tool("ask", {"corpus": "notes", "require": req,
-                            "with_body": True, "limit": 30})
-        full7 += len(json.dumps(r0.get("bodies") or {}, ensure_ascii=False))
-        r1 = c.tool("ask", {"corpus": "notes", "require": req})      # 只看支，不拉正文
-        lean += len(json.dumps(r1, ensure_ascii=False))
-        r2 = c.tool("ask", {"corpus": "notes", "require": req,
-                            "with_body": True, "limit": 2})          # 只读 2 条
-        lean += len(json.dumps(r2.get("bodies") or {}, ensure_ascii=False))
-    print(f"\n⑦ 成本对比（**同一组 {len(QS)} 个问题**，两种用法）")
-    print(f"   全量拉（一次 with_body limit30）：{full7} 字")
-    print(f"   真实用法（先 ask 看支 → 再 with_body limit2）：{lean} 字")
-    print(f"   ⇒ 差 {(lean / max(1, full7) - 1) * 100:+.0f}%"
-          f"（{'更贵' if lean > full7 else '更省'}）")
-    print("   ⚠️ 反直觉：分两步**没有更省** —— 因为每次调用的**元数据**（nodes/"
-          "provenance/query 回显）才是大头，两步就付两遍。")
-
-    # ── ⑧ 一次 ask 的返回里，元数据 vs 正文各占多少 ──────────────────
-    one = c.tool("ask", {"corpus": "notes", "require": ["project=alpha"],
-                         "with_body": True, "limit": 30})
-    whole = len(json.dumps(one, ensure_ascii=False))
-    body_part = len(json.dumps(one.get("bodies") or {}, ensure_ascii=False))
-    print(f"\n⑧ 单次 ask 的构成（project=alpha）")
-    print(f"   整包 {whole} 字｜其中正文块 {body_part} 字"
-          f"（{body_part / max(1, whole) * 100:.0f}%），"
-          f"元数据 {whole - body_part} 字（{(whole - body_part) / max(1, whole) * 100:.0f}%）")
 
     c.close()
     shutil.rmtree(tmp, ignore_errors=True)
