@@ -763,13 +763,18 @@ def _cache_lookup(app, nodes_dir: Path, req, forb, plugin: str):
 
 
 def _tool_undo(a: dict) -> dict:
-    """反事实：**删掉一个项，看什么会变，然后原样恢复**。
+    """反事实：**删掉一个项，看什么会变**（不改任何东西）。
 
     ★ 这是「推理」四件事里的反事实那一件（删了会怎样）。`entry.py` 本身只读
       （不 insert / remove / 落盘）—— 插件继承只读就把这件能力丢了。
-      2026-10-24 按「打包成插件只舍弃自由度、不牺牲能力」补回来。
-    ★ 做法：指纹 → 快照 → 真删 → diff → 读回恢复 → **指纹逐字比过才敢报成功**。
-      恢复不了就是红，不是静默（「恢复了」与「没删成」在看答时长得一样）。
+      2026-10-24 按「打包成插件只舍弃自由度、不牺牲能力」补回来；
+      同日晚些时候按用户点出的「有更好函数可以替代」重写。
+
+    ★★ 为什么不真删：旧做法是「快照 → 真删 → 恢复」，它有一个**本可以不存在的
+      失败态：恢复失败**。而答案集只由「项各有哪些键」决定（`App._resolve`
+      走 `self.answer_set`）⇒ 删一项，答案集的变化只能是丢掉它，算术上就知道；
+      结构侧的内核反事实（`impact.compare_prediction`）又明确要求「给一份深拷贝」。
+      ⇒ 在**副本**上删，副本即弃：不需要恢复，也就不可能恢复失败。
     """
     corpus = a.get("corpus", "")
     app, in_store = _app(corpus)
@@ -799,42 +804,38 @@ def _tool_undo(a: dict) -> dict:
         return {"ok": False, "out_of_structure": True, **chk}
 
     from ldv.core import impact as IM
-    from ldv.core import persist as P
 
     k = app.ensure(plugin)
-    fp_before = P._fingerprint(k)                  # ① 删前指纹
-    snap = P.to_dict(k)                            # ② 快照
-    # ★ 预测（只算不改）：用**内核的 impact**，不再自己遍历成员 diff。
-    #   2026-10-24 同步：ldv 仓库那边把 impact 接进了产品（entry 的 impact=1），
-    #   而这里手写过一遍同样的东西 —— 去掉重复，并且用上它多给的两样：
-    #     ① 「不在结构里」：项压根没进结构时，我原来只会报「什么都没变」，
-    #        说不出为什么（那正是「没算」与「算了没影响」混在一起的形状）。
-    #     ② `compare_prediction`：预测 vs 实测对照（在**深拷贝**上真删）。
+    # ★★ 2026-10-24 用户点出「有更好函数可以替代」，查证后整个重写：
+    #
+    #   旧做法：指纹 → 快照 → 真删 → diff → 读回恢复 → 指纹比过。
+    #           它有一个**本可以不存在的失败态**：恢复失败。
+    #
+    #   为什么可以拆掉 —— 两件事放一起就够：
+    #     ① `App._resolve` 的答案集来自 `self.answer_set(req, forb)`，
+    #        而答案集**只由「项各有哪些键」决定** ⇒ 删掉一项，
+    #        答案集的变化**只能是丢掉那一项**。这是算术上就知道的，不用真删。
+    #     ② `impact.compare_prediction` 明确要求「给一份**深拷贝**」——
+    #        内核自己的反事实就规定在副本上做。
+    #
+    #   ⇒ 删除发生在**深拷贝**上，副本即弃：不需要快照、不需要恢复、
+    #     **也就不可能「恢复失败」**。那个红状态直接消失。
+    # ⚠️ answer_set 收 **frozenset**（传 list 会 TypeError: '<=' not supported）
+    ans_before = set(app.answer_set(frozenset(req), frozenset(forb)))
+    # ① 预测（只算不改）
     pred = IM.removal_impact(k, [iid])
-    try:
-        import copy
+    # ② 实测 + 路径：都在副本上
+    import copy
 
+    try:
+        kc = copy.deepcopy(k)
+        path = kc.remove(iid)
         cmp = IM.compare_prediction(copy.deepcopy(k), [iid])
     except Exception as e:                         # noqa: BLE001
-        # 深拷贝失败不算错（`LockedKernel` 持锁不可拷）—— 但**要说出来**
-        cmp = {"_error": f"{type(e).__name__}: {e}"}
-    before = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
-
-    # ③ 三处**一起**摘 —— 这是这个工具的关键（第一版只摘内核 ⇒ 答案没变）：
-    #    `answer_set` 从 App 的键表算，内核只负责「一支里有哪些项」。
-    #    两个面不同步，反事实就是假的（删了项，答案照旧，还会报「没丢」）。
-    saved_keys = app.keys_of.pop(iid)
-    saved_node = app.nodes.pop(iid)
-    path = k.remove(iid)
-    after = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
-
-    # ④ 恢复：三个面一起放回，内核用快照读回（新对象换掉旧的）
-    app.keys_of[iid] = saved_keys
-    app.nodes[iid] = saved_node
-    app.kernels[plugin] = P.from_dict(snap, k.plugin)
-    restored = app.ensure(plugin)
-    back = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
-    ok_restore = (back == before) and (P._fingerprint(restored) == fp_before)
+        # 深拷贝失败（如 `LockedKernel` 持锁不可拷）⇒ 如实报，**不退回真删那条路**
+        return {"ok": False, "removed": iid,
+                "why": f"深拷贝失败，没法在副本上做反事实：{type(e).__name__}: {e}",
+                "note": "本工具**不真删**（删了就要恢复，而恢复是会失败的）—— 所以这里只能报错"}
 
     return {"ok": True, "corpus": app.corpus_name, "removed": iid,
             "cone": list(path),
@@ -845,12 +846,14 @@ def _tool_undo(a: dict) -> dict:
                        "不在结构里": pred.get("不在结构里") or []},
             # ★ 预测 vs 实测（在深拷贝上真删，不改这棵树）
             "prediction_check": cmp,
-            "answer_lost": sorted(before - after),
-            "answer_gained": sorted(after - before),
-            "restored": ok_restore,
-            "restore_note": ("删后答案与指纹都与删前逐字相同 ⇒ 恢复成功"
-                             if ok_restore else "**恢复失败** —— 这一趟不算数"),
-            "note": "反事实只在内存里发生过；材料一个字节没动"}
+            # ★ 答案集的变化是**算出来的，不是删出来的**
+            "answer_lost": [iid] if iid in ans_before else [],
+            "answer_gained": [],
+            "answer_note": ("答案集只由项各有哪些键决定 ⇒ 删一项，变化只能是丢掉它"
+                            "（算术上就知道，不必真删）"),
+            "untouched": True,
+            "note": ("这一趟什么都没改 —— 删除发生在**深拷贝**上，副本即弃："
+                     "不需要恢复，也就不可能恢复失败。材料一个字节没动")}
 
 
 def _tool_next(a: dict) -> dict:

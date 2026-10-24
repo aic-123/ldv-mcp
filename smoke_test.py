@@ -291,17 +291,18 @@ def main() -> int:
                              "require": ["type=立场"]})
         pc = u["out"].get("prediction_check") or {}
         im = u["out"].get("impact") or {}
-        chk("S16", "★ undo：删项 ⇒ 答案丢它；恢复后答案与指纹逐字相同；"
-                   "且**用内核 impact 做预测**并与实测对照",
+        chk("S16", "★ undo：删项 ⇒ 答案丢它（**算出来的，不是删出来的**）；"
+                   "副本上真删、**什么都不改**；用内核 impact 预测并与实测对照",
             u["out"].get("ok") is True
             and "stance-0001" in (u["out"].get("answer_lost") or [])
-            and u["out"].get("restored") is True
+            and u["out"].get("untouched") is True
+            and bool(u["out"].get("answer_note"))
             # ★ 2026-10-24 同步：不再手写成员 diff，改用内核 impact；
             #   预测与实测必须一致（会空 / 缩 两条）
             and bool(im.get("说明")) and pc.get("会空一致") is True
             and pc.get("缩一致") is True,
             f"丢 {u['out'].get('answer_lost')}｜锥 {len(u['out'].get('cone') or [])} 层"
-            f"｜恢复 {u['out'].get('restored')}"
+            f"｜untouched={u['out'].get('untouched')}"
             f"｜impact: {im.get('说明')}｜预测一致 会空={pc.get('会空一致')} 缩={pc.get('缩一致')}")
 
         # ── S17 next：反思三档 ─────────────────────────────────────────
@@ -504,7 +505,8 @@ def main() -> int:
             # ⚠️ 不断言 recorded=True：同一 (qfp,did) 在 S16 已经记过 ⇒ 这里是去重
             #   （recorded=False 是**对的**，不是失败）
             and d1["out"].get("ok") is True and d1["out"].get("did")
-            and u1["out"].get("ok") is True and u1["out"].get("restored") is True
+            # ★ 2026-10-24 重写后不再有「恢复」这一步：untouched=True 即证明
+            and u1["out"].get("ok") is True and u1["out"].get("untouched") is True
             and d2["out"].get("ok") is False and "另一次查询" in str(d2["out"].get("why")),
             f"第1条「{str(it1.get('title'))[:16]}」｜drill={d1['out'].get('ok')}"
             f"/{d1['out'].get('recorded')}｜undo 恢复={u1['out'].get('restored')}"
