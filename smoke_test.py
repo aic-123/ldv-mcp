@@ -380,11 +380,73 @@ def main() -> int:
             f"truncated={it.get('truncated')}｜{len(it.get('body') or '')} 字"
             f"｜原 {it.get('body_chars')} 字｜{str(rt['out'].get('note'))[:40]}")
 
+        # ── S22 会话缓冲：曝光进缓冲、下钻标 promoted、会话之间不串 ──────
+        sA = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"], "session": "sA"})
+        sB = tool(c, "ask", {"corpus": "mine", "require": ["type=议题"], "session": "sB"})
+        didA = (sA["out"].get("nodes") or [{}])[0].get("did", "")
+        dA = tool(c, "drill", {"corpus": "mine", "did": didA,
+                               "require": ["type=立场"], "session": "sA"})
+        oA = tool(c, "orient", {"corpus": "mine", "session": "sA"})
+        oB = tool(c, "orient", {"corpus": "mine", "session": "sB"})
+        sessA, sessB = oA["out"].get("session") or {}, oB["out"].get("session") or {}
+        chk("S22", "★ 会话缓冲：曝光进缓冲、下钻标 promoted、两个会话互不可见",
+            (sA["out"].get("session") or {}).get("n_buffer") == 1
+            and (sB["out"].get("session") or {}).get("n_buffer") == 1
+            and dA["out"].get("session_promoted") is True
+            and sessA.get("n_buffer") == 1 and sessA.get("promoted") == 1
+            and sessB.get("n_buffer") == 1 and sessB.get("promoted") == 0,
+            f"sA 缓冲 {sessA.get('n_buffer')} 条 / promoted {sessA.get('promoted')}"
+            f"｜sB 缓冲 {sessB.get('n_buffer')} / promoted {sessB.get('promoted')}")
+
+        # ── S23 缓冲有界 + 挤出记账 + 漏检率读数 ─────────────────────
+        cfg = corpus.parent / "config.json"
+        cfg.write_text('{"buffer_cap": 2}', encoding="utf-8")
+        for q in ("type=立场", "type=议题", "type=案例"):
+            tool(c, "ask", {"corpus": "mine", "require": [q], "session": "sC"})
+        oC = tool(c, "orient", {"corpus": "mine", "session": "sC"})
+        sc = oC["out"].get("session") or {}
+        # 再问一次被挤掉的支所在的题 ⇒ 记一次「漏检」
+        tool(c, "ask", {"corpus": "mine", "require": ["type=立场"], "session": "sC"})
+        oC2 = tool(c, "orient", {"corpus": "mine", "session": "sC"})
+        sc2 = oC2["out"].get("session") or {}
+        cfg.write_text('{"buffer_cap": 50}', encoding="utf-8")
+        chk("S23", "★ 缓冲有界：挤掉记账、漏检率可读（挤掉后再提到 ⇒ 计数+）",
+            sc.get("n_buffer") == 2 and sc.get("evicted", 0) >= 1
+            and sc.get("漏检率") is not None
+            and sc2.get("remention", 0) > sc.get("remention", 0),
+            f"cap 2 ⇒ 缓冲 {sc.get('n_buffer')}｜挤出 {sc.get('evicted')}"
+            f"｜漏检率 {sc.get('漏检率')} → {sc2.get('漏检率')}"
+            f"（remention {sc.get('remention')} → {sc2.get('remention')}）")
+
+        # ── S24 多个 ldv：不给名字 ⇒ 列出全部 ───────────────────────
+        oAll = tool(c, "orient", {})
+        names = [r["ldv"] for r in (oAll["out"].get("ldvs") or [])]
+        chk("S24", "★ 多个 ldv：不给名字 ⇒ 列出全部（只数文件不建内核）",
+            oAll["out"].get("ldv_count", 0) >= 1 and "mine" in names
+            and all("n_items" in r for r in oAll["out"].get("ldvs") or []),
+            f"{oAll['out'].get('ldv_count')} 个 ldv："
+            f"{[(r['ldv'], r['n_items'], r['sessions']) for r in oAll['out'].get('ldvs') or []]}")
+
+        # ── S25 使用记录隔离（可选）：默认跨会话，开了隔离就互不影响 ────
+        cfg.write_text('{"buffer_cap": 50, "isolate_usage": true}', encoding="utf-8")
+        tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso1"})
+        n1 = (tool(c, "ask", {"corpus": "mine", "require": ["type=概念"],
+                              "session": "iso1"})["out"].get("nodes") or [{}])[0].get("did")
+        tool(c, "drill", {"corpus": "mine", "did": n1, "require": ["type=概念"],
+                          "session": "iso1"})
+        iso1 = tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso1"})
+        iso2 = tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso2"})
+        cfg.unlink()
+        chk("S25", "★ 使用记录隔离（可选）：开了 isolate_usage ⇒ 两个会话的倾向互不影响",
+            iso1["out"].get("ordered_by") == "usage"
+            and iso2["out"].get("ordered_by") == "default",
+            f"iso1 {iso1['out'].get('ordered_by')}｜iso2 {iso2['out'].get('ordered_by')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S21）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S25）")
     return 1 if FAIL else 0
 
 

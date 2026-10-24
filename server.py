@@ -53,6 +53,7 @@ sys.path.insert(0, str(HERE / "core"))          # 钉住的内核
 sys.path.insert(0, str(HERE))                   # 产品自己的包
 
 from checks import lock as L                    # noqa: E402
+from checks import session as SESS             # noqa: E402
 from checks import validate as V                # noqa: E402
 from spec_store import store as S               # noqa: E402
 
@@ -134,8 +135,13 @@ def _corpus_dir(name_or_path: str) -> tuple[Path | None, bool]:
                      f"（试过 {in_store}）")
 
 
-def _app(corpus: str):
-    """按名字/路径建一个 entry.App。内置语料 ⇒ App(None)。"""
+def _app(corpus: str, session: str = ""):
+    """按名字/路径建一个 entry.App。内置语料 ⇒ App(None)。
+
+    ★ `session` 只在 `config.json` 写了 `isolate_usage: true` 时才动使用记录
+      —— 默认**跨会话累积**（保持已有行为不变）。改默认值等于悄悄改变
+      老用户看到的结果，所以隔离是**选项**，不是默认。
+    """
     import entry as E
 
     nodes, in_store = _corpus_dir(corpus)
@@ -143,7 +149,19 @@ def _app(corpus: str):
         app = E.App(None)
         return app, True
     os.environ["LDV_CORPUS"] = str(nodes)
-    return E.App(None), in_store
+    app = E.App(None)
+    if session and in_store and SESS.config(nodes.parent)["isolate_usage"]:
+        # 把使用记录改到会话目录：__init__ 已经装过一遍，先清再重装
+        app._usage_dir = SESS.sdir(nodes.parent, session) / "usage"
+        app._tendency = {}
+        app.usage_loaded = 0
+        for k in app.kernels.values():
+            try:
+                k.usage.clear()
+            except AttributeError:
+                pass
+        app._load_usage()
+    return app, in_store
 
 
 def _spec_dir(corpus: str) -> Path:
@@ -192,6 +210,30 @@ def _value_counts(app) -> dict:
     return out
 
 
+def _orient_all() -> dict:
+    """不给 ldv 名 ⇒ 列出这个 store 下**所有** ldv。
+
+    ★ 多个 ldv 是允许的：一个 ldv = 一套独立的语料 / 透镜 / 记忆（一个「认识」），
+      一个 ldv 下可以有多会话。这里只**数文件不建内核** —— 列目录不该付建树的代价。
+    """
+    base = STORE / "_data"
+    rows: list[dict] = []
+    if base.is_dir():
+        for d in sorted(p for p in base.iterdir() if p.is_dir()):
+            nodes = d / "nodes"
+            if not nodes.is_dir():
+                continue
+            rows.append({"ldv": d.name,
+                         "n_items": len(list(nodes.glob("*.md"))),
+                         "sessions": len(SESS.sessions(d)),
+                         "has_lens": (STORE / "specs" / d.name / "view_spec.json").is_file(),
+                         "derived": sorted(p.stem for p in (d / "derived").glob("*.json"))
+                         if (d / "derived").is_dir() else []})
+    return {"ok": True, "ldv_count": len(rows), "ldvs": rows,
+            "note": "多个 ldv = 多套独立的语料/透镜/记忆；一个 ldv 下可有多个会话。"
+                    "给 corpus 名字再看某个 ldv 的细节"}
+
+
 def _tool_orient(a: dict) -> dict:
     """agent 的「**我记得**」—— 私人 store 的全貌。会话开始调一次。
 
@@ -200,8 +242,11 @@ def _tool_orient(a: dict) -> dict:
     陌生人；有了它，它有一个**结构上可查**的过去。
     """
     corpus = a.get("corpus", "")
+    sid = str(a.get("session") or "")
+    if not corpus:
+        return _orient_all()
     nodes, in_store = _corpus_dir(corpus)
-    app, _ = _app(corpus)
+    app, _ = _app(corpus, sid)
     out: dict = {"ok": True, "corpus": app.corpus_name,
                  "n_items": len(app.nodes), "n_keys": len(app.all_keys),
                  "keys": sorted(app.all_keys),
@@ -229,6 +274,10 @@ def _tool_orient(a: dict) -> dict:
             out["usage"] = {k: us.get(k) for k in
                             ("记录数", "覆盖方向数", "缓冲批次数", "最多的方向")}
             out["actor_split"] = _actor_split(app)
+        # ★ 会话：缓冲 / 已 promote / 挤出 / 漏检率（报数不判断）
+        out["sessions"] = SESS.sessions(nodes.parent)
+        if sid:
+            out["session"] = SESS.status(nodes.parent, sid)
     recent: list[dict] = []
     if CALL_LOG.is_file():
         for line in list(io.open(CALL_LOG, encoding="utf-8"))[-5:]:
@@ -275,7 +324,8 @@ def _tool_ask(a: dict) -> dict:
         ④ 出处摘要  {语料/agent填/已验证} 三类分开数
     """
     corpus = a.get("corpus", "")
-    app, in_store = _app(corpus)
+    sid = str(a.get("session") or "")
+    app, in_store = _app(corpus, sid)
     req = list(a.get("require") or [])
     forb = list(a.get("forbid") or [])
 
@@ -321,7 +371,15 @@ def _tool_ask(a: dict) -> dict:
     dfields = set(app.derived or {})
     derived_used = sorted({k for k in (req + forb)
                            if k.split("=", 1)[0] in dfields})
+    # ★ 会话缓冲：这次**摆出了哪几支**（曝光，不是「有用」）——
+    #   与内核两段通道同构：查询进缓冲，下钻才 promote。作用域按会话。
+    sess_info: dict = {}
+    if sid and nodes_dir is not None:
+        sess_info = SESS.expose(nodes_dir.parent, sid, qfp=app._last_qfp,
+                                dids=[n["did"] for n in nodes],
+                                n_answer=r.get("n_answer") or 0)
     return {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
+            "session": sess_info,
             "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
             "derived_used": derived_used,
             "derived_note": ("本次用到的维度里，这些是 **agent 派生的**"
@@ -376,7 +434,8 @@ def _tool_remember(a: dict) -> dict:
 def _tool_drill(a: dict) -> dict:
     """下钻一支 = 这一次「有用」的真实信号。agent 代钻与人的下钻同权。"""
     corpus = a.get("corpus", "")
-    app, in_store = _app(corpus)
+    sid = str(a.get("session") or "")
+    app, in_store = _app(corpus, sid)
     req = list(a.get("require") or [])
     forb = list(a.get("forbid") or [])
     chk = V.check_keys(app.all_keys, req, forb)
@@ -385,10 +444,17 @@ def _tool_drill(a: dict) -> dict:
     did = a.get("did", "")
     r = app.query({"require": req, "forbid": forb})
     d = app.drill(did, req, forb)
+    # ★ 会话缓冲里把对应曝光标成 promoted（真实动作，与内核两段通道同构）
+    promoted = False
+    if sid:
+        nodes_dir, _ = _corpus_dir(corpus)
+        if nodes_dir is not None:
+            promoted = SESS.mark_promoted(nodes_dir.parent, sid, did)
     # ★ qfp 进**返回**（调用方要看「这一钻属于哪次查询」），日志由调度器
     #   统一记 —— 早先工具内部也记一次 ⇒ 同一次调用两行，S11 抓到。
     return {"ok": True, "corpus": app.corpus_name, "did": did,
             "actor": _actor(a), "qfp": app._last_qfp,
+            "session_promoted": promoted,
             "recorded": d.get("recorded"), "record_note": d.get("record_note"),
             "parent": d.get("parent"), "children": d.get("children"),
             "usage_enabled": app._usage_dir is not None and in_store}
@@ -618,7 +684,9 @@ TOOLS = [
                     "使用记录 / 最近几次动作。会话开始调一次。",
      "inputSchema": {"type": "object",
                      "properties": {"corpus": {"type": "string",
-                                               "description": "语料名字或路径；空 = 内置 36 项"}}}},
+                                               "description": "语料名字或路径；空 = 列出所有 ldv"},
+                                    "session": {"type": "string",
+                                                "description": "会话名（调用方声明，默认 default）"}}}},
     {"name": "ask",
      "description": "把问题翻成键，在划分树上查一支。返回支序（原样）+ 查询式 + "
                     "透镜指纹 + 出处摘要。第一次可带 lens（带理由）自动冻结。",
@@ -633,7 +701,9 @@ TOOLS = [
                          "rationale": {"type": "string",
                                        "description": "为什么选这个透镜（必填才能冻）"},
                          "plugin": {"type": "string",
-                                    "description": "临时覆盖透镜里的方向函数"}},
+                                    "description": "临时覆盖透镜里的方向函数"},
+                         "session": {"type": "string",
+                                     "description": "会话名（调用方声明，默认 default）"}},
                      "required": ["require"]}},
     {"name": "remember",
      "description": "往自己的私人语料写一个节点（只追加不覆写，filled_by 照记）。",
@@ -654,7 +724,7 @@ TOOLS = [
                          "did": {"type": "string"},
                          "require": {"type": "array", "items": {"type": "string"}},
                          "forbid": {"type": "array", "items": {"type": "string"}},
-                         "actor": {"type": "string"}},
+                         "actor": {"type": "string"}, "session": {"type": "string"}},
                      "required": ["did", "require"]}},
     {"name": "read",
      "description": "读**内容** —— 标题与正文（有界；截断必报）。"
