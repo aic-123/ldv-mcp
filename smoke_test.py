@@ -525,11 +525,38 @@ def main() -> int:
             f"支 {br.get('did')} 的 must={br.get('must')}｜n_members={br.get('n_members')}"
             f"｜再问得 {same['out'].get('n_answer')} 项")
 
+        # ── S30 密钥不进仓库：扫**已跟踪文件**，命中就红 ────────────────
+        # 用户 2026-10-24：「别让它进仓库了」。.gitignore 挡的是「以后误 add」，
+        # 这条扫的是「已经在里面的」—— 两层，缺一层都可能漏。
+        import re as _re
+        import subprocess as _sp
+
+        repo_root = HERE
+        try:
+            tracked = _sp.run(["git", "ls-files"], cwd=str(repo_root), capture_output=True,
+                              text=True, encoding="utf-8").stdout.splitlines()
+        except OSError:
+            tracked = []
+        pat = _re.compile(r"sk-[0-9a-zA-Z]{24,}")
+        leaks = []
+        for rel in tracked:
+            p = repo_root / rel
+            if not p.is_file() or p.suffix in (".pyc", ".png", ".jpg"):
+                continue
+            try:
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if pat.search(txt):
+                leaks.append(rel)
+        chk("S30", "★ 密钥不进仓库：已跟踪文件里扫不到 sk- 开头的 key",
+            not leaks, f"扫了 {len(tracked)} 个已跟踪文件｜泄漏：{leaks or '无'}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S29）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S30）")
     return 1 if FAIL else 0
 
 

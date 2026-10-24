@@ -2,3 +2,11 @@ store/
 __pycache__/
 *.pyc
 .python-version
+
+# ── 密钥一律不进仓库（2026-10-24）─────────────────────────────
+# 真实的 key 存在仓库外：~/.workbuddy-ai/secrets/deepseek.key
+# 探针只从环境变量 DEEPSEEK_API_KEY 读。这两条 + smoke 里的 sk- 扫描是双保险。
+*.key
+.env
+*.env
+secrets/
