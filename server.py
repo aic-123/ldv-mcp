@@ -487,6 +487,10 @@ def _bodies(app, ids: list[str], limit: int, max_chars: int) -> dict:
                       "evidence_status": str(f.get("evidence_status", "") or ""),
                       "scope": str(f.get("scope", "") or ""),
                       "source": f.get("source", ""),
+                      # ★ 节点的 front matter 全字段（树自己的数据）——
+                      #   不给它，agent 读不出 `project: alpha` 这类自定义字段，
+                      #   也就没法把「按项目分组」翻成一个可查的维度。
+                      "fields": {k: v for k, v in f.items() if k != "title"},
                       "body": body[:max_chars],
                       "truncated": len(body) > max_chars,
                       "body_chars": len(body)})
@@ -562,9 +566,19 @@ def _tool_derive(a: dict) -> dict:
             json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True))
         os.replace(tmp, p)                   # 原子替换：不留半份
     keys = sorted({f"{field}={v}" for v in doc["values"].values()})
+    # ★ 覆盖率（2026-10-24 长场景实验暴露的）：派生维度是**快照** ——
+    #   建完之后新写进语料的节点**不会**自动进它。不报覆盖率，用户会以为
+    #   全库都按这个维度分好了，实际只有建那一刻的那批。
+    covered = len(doc["values"])
+    uncovered = max(0, len(app.nodes) - covered)
     return {"ok": True, "field": field, "n_items": len(doc["values"]),
             "keys_added": keys, "path": str(p),
             "derived_from": frm, "generated_by": _actor(a),
+            "coverage": {"covered": covered, "uncovered": uncovered,
+                         "note": ("全部节点都有值" if uncovered == 0 else
+                                  f"**还有 {uncovered} 项没有这个维度的值** —— "
+                                  "派生维度是快照，后来写入的节点不在里面；"
+                                  "要覆盖全库请重新 derive（force）")},
             "note": "材料没动（指纹不变、透镜仍有效），但词汇表多了这些键 ⇒ "
                     "答案可能变。删掉这个文件即逐字回到原状"}
 
