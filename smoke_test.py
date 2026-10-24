@@ -20,7 +20,7 @@
     S13 ★ 演员分解：agent 下钻算有用，但**谁钻的可分解**
     S14 ★ remember：写节点 / 同 id 不覆写 / 写完透镜报 stale（材料变 ⇒ 认识作废）
     S15 ★ derive：agent 敲定派生维度 ⇒ 能查、标为派生；删 sidecar ⇒ 逐字回退
-    S16 ★ undo：反事实（删了会怎样）⇒ 答案丢它；恢复后答案与指纹逐字相同
+    S16 ★ undo：反事实 ⇒ 答案丢它；恢复后答案与指纹逐字相同；用内核 impact 预测并与实测对照
     S17 ★ next：反思三档（必须/可延后/可忽略）都有读数
     S18 ★ 跨进程写锁：别人持锁 ⇒ StoreBusy（不静默写）；S18b 被杀进程留下陈旧锁
     S19 ★ derive 同名维度不许静默覆盖（要换必须显式 force）
@@ -282,12 +282,20 @@ def main() -> int:
         # ── S16 undo：反事实 —— 删了会怎样，然后原样恢复 ────────────────
         u = tool(c, "undo", {"corpus": "mine", "id": "stance-0001",
                              "require": ["type=立场"]})
-        chk("S16", "★ undo：删项 ⇒ 答案丢它；恢复后答案与指纹逐字相同",
+        pc = u["out"].get("prediction_check") or {}
+        im = u["out"].get("impact") or {}
+        chk("S16", "★ undo：删项 ⇒ 答案丢它；恢复后答案与指纹逐字相同；"
+                   "且**用内核 impact 做预测**并与实测对照",
             u["out"].get("ok") is True
             and "stance-0001" in (u["out"].get("answer_lost") or [])
-            and u["out"].get("restored") is True,
+            and u["out"].get("restored") is True
+            # ★ 2026-10-24 同步：不再手写成员 diff，改用内核 impact；
+            #   预测与实测必须一致（会空 / 缩 两条）
+            and bool(im.get("说明")) and pc.get("会空一致") is True
+            and pc.get("缩一致") is True,
             f"丢 {u['out'].get('answer_lost')}｜锥 {len(u['out'].get('cone') or [])} 层"
-            f"｜恢复 {u['out'].get('restored')}")
+            f"｜恢复 {u['out'].get('restored')}"
+            f"｜impact: {im.get('说明')}｜预测一致 会空={pc.get('会空一致')} 缩={pc.get('缩一致')}")
 
         # ── S17 next：反思三档 ─────────────────────────────────────────
         n = tool(c, "next", {"corpus": "mine"})

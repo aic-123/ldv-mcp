@@ -628,13 +628,27 @@ def _tool_undo(a: dict) -> dict:
     if not chk["ok"]:
         return {"ok": False, "out_of_structure": True, **chk}
 
+    from ldv.core import impact as IM
     from ldv.core import persist as P
 
     k = app.ensure(plugin)
     fp_before = P._fingerprint(k)                  # ① 删前指纹
     snap = P.to_dict(k)                            # ② 快照
+    # ★ 预测（只算不改）：用**内核的 impact**，不再自己遍历成员 diff。
+    #   2026-10-24 同步：ldv 仓库那边把 impact 接进了产品（entry 的 impact=1），
+    #   而这里手写过一遍同样的东西 —— 去掉重复，并且用上它多给的两样：
+    #     ① 「不在结构里」：项压根没进结构时，我原来只会报「什么都没变」，
+    #        说不出为什么（那正是「没算」与「算了没影响」混在一起的形状）。
+    #     ② `compare_prediction`：预测 vs 实测对照（在**深拷贝**上真删）。
+    pred = IM.removal_impact(k, [iid])
+    try:
+        import copy
+
+        cmp = IM.compare_prediction(copy.deepcopy(k), [iid])
+    except Exception as e:                         # noqa: BLE001
+        # 深拷贝失败不算错（`LockedKernel` 持锁不可拷）—— 但**要说出来**
+        cmp = {"_error": f"{type(e).__name__}: {e}"}
     before = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
-    mem_before = {d.did: set(k.members_of(d)) for d in k.all_directions()}
 
     # ③ 三处**一起**摘 —— 这是这个工具的关键（第一版只摘内核 ⇒ 答案没变）：
     #    `answer_set` 从 App 的键表算，内核只负责「一支里有哪些项」。
@@ -643,8 +657,6 @@ def _tool_undo(a: dict) -> dict:
     saved_node = app.nodes.pop(iid)
     path = k.remove(iid)
     after = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
-    lost_dirs = [d.did for d in k.all_directions()
-                 if iid in mem_before.get(d.did, ()) and iid not in k.members_of(d)]
 
     # ④ 恢复：三个面一起放回，内核用快照读回（新对象换掉旧的）
     app.keys_of[iid] = saved_keys
@@ -656,9 +668,15 @@ def _tool_undo(a: dict) -> dict:
 
     return {"ok": True, "corpus": app.corpus_name, "removed": iid,
             "cone": list(path),
+            # ★ 预测（内核 impact 给的，不是我手算的）
+            "impact": {"说明": pred.get("说明"),
+                       "会变空": pred.get("会变空") or [],
+                       "成员减少数": pred.get("成员减少数"),
+                       "不在结构里": pred.get("不在结构里") or []},
+            # ★ 预测 vs 实测（在深拷贝上真删，不改这棵树）
+            "prediction_check": cmp,
             "answer_lost": sorted(before - after),
             "answer_gained": sorted(after - before),
-            "directions_that_lost_it": lost_dirs[:12],
             "restored": ok_restore,
             "restore_note": ("删后答案与指纹都与删前逐字相同 ⇒ 恢复成功"
                              if ok_restore else "**恢复失败** —— 这一趟不算数"),
