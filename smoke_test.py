@@ -509,11 +509,27 @@ def main() -> int:
             f"/{d1['out'].get('recorded')}｜undo 恢复={u1['out'].get('restored')}"
             f"｜换查询后再 drill ⇒ {str(d2['out'].get('why'))[:26]}")
 
+        # ── S29 按支读：structure 拿 must/mustnot ⇒ 再 ask 就是那一支的成员 ──
+        # 原 `read(did=)` 并进 ask 后，「只看某一支」靠**分支自己的定义**：
+        # 拿 `must`/`mustnot` 再问一次，答案集就是那一支（不必知道 did）。
+        st = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"],
+                             "structure": True})
+        br = (st["out"].get("nodes") or [{}])[0]
+        same = tool(c, "ask", {"corpus": "mine",
+                               "require": br.get("must") or [],
+                               "forbid": br.get("mustnot") or []})
+        chk("S29", "★ 按支读（替代 read(did=)）：拿分支的 must/mustnot 再问一次 "
+                   "⇒ 答案就是那一支",
+            br.get("must") is not None
+            and same["out"].get("n_answer") == br.get("n_members"),
+            f"支 {br.get('did')} 的 must={br.get('must')}｜n_members={br.get('n_members')}"
+            f"｜再问得 {same['out'].get('n_answer')} 项")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S28）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S29）")
     return 1 if FAIL else 0
 
 

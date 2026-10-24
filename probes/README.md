@@ -11,6 +11,7 @@
 | `long_scenario.py` | 空库起 14 天：答案偏移、缺口、压缩 | 无（自造笔记） |
 | `token_cost.py` | 每问 / 每条答案的 token 成本 | **tiktoken** |
 | `repeat_cost.py` | 重复任务 / 历史检索的成本形状 | **tiktoken** |
+| `eval_rigor.py` | 位置扫描 / 多针 / 重复取均值（对齐 RAGAS 检索侧） | **tiktoken** |
 
 结论与读数见：
 
