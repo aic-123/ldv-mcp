@@ -1,31 +1,49 @@
 # probes —— 可复跑的实验，不是宣称
 
-三个探针，每个都**真起 MCP 会话**跑一遍，读数逐字留在 `out/`。
+六个探针，每个都**真起 MCP 会话**跑一遍，读数逐字留在 `out/`。
 
-| 探针 | 回答什么问题 | 跑法 |
+| 探针 | 回答什么问题 | 依赖 |
 |---|---|---|
-| `plugin_gap.py` | 有插件 vs 没插件的回答差在哪 | `python probes/plugin_gap.py` |
-| `subjectivity.py` | 那个差异能不能表示**主体性**（短流程） | `python probes/subjectivity.py` |
-| `subjectivity_long.py` | 放大到 **1200 项 / 15 轮 / 10 条查询**还成不成立 | `python probes/subjectivity_long.py` |
+| `demo.py` | 三个场景的走查（内置 36 项） | 无（clone 即跑） |
+| `plugin_gap.py` | 有插件 vs 没插件的回答差在哪 | 无 |
+| `subjectivity.py` | 那个差异能不能表示**主体性**（短流程） | 无 |
+| `subjectivity_long.py` | 放大到 1200 项 / 15 轮还成不成立 | `snap-hepth` 语料 |
+| `long_scenario.py` | 空库起 14 天：答案偏移、缺口、压缩 | 无（自造笔记） |
+| `token_cost.py` | 每问 / 每条答案的 token 成本 | **tiktoken** |
+| `repeat_cost.py` | 重复任务 / 历史检索的成本形状 | **tiktoken** |
 
 结论与读数见：
 
 - [`../docs/有插件和没插件的差距.md`](../docs/有插件和没插件的差距.md)
 - [`../docs/主体性判据.md`](../docs/主体性判据.md)
+- [`../docs/长场景实测.md`](../docs/长场景实测.md)（含 token 成本与重复/历史检索）
 
-## 依赖
+## 怎么跑
 
-- `plugin_gap.py` / `subjectivity.py`：只用内置 36 项语料，**clone 下来直接能跑**
-- `subjectivity_long.py`：要 `snap-hepth`（1200 项，**不进仓库**）。
-  用 `LDV_DATA` 指向你的 `_data` 目录：
-  ```bash
-  LDV_DATA=/path/to/_data python probes/subjectivity_long.py
-  ```
-  语料不在 ⇒ 打印「⊘ 语料不在」并以 0 退出（**跳过 ≠ 通过**，报告里写明）
+```bash
+python probes/demo.py                  # 内置语料，零依赖
+python probes/plugin_gap.py
+python probes/subjectivity.py
+python probes/long_scenario.py
 
-## ⚠️ 两条纪律
+# 要 tiktoken（真 tokenizer，不是估算）
+python -m pip install tiktoken
+python probes/token_cost.py
+python probes/repeat_cost.py
+
+# 要外部语料（不进仓库）
+LDV_DATA=/path/to/_data python probes/subjectivity_long.py
+```
+
+- 没装 `tiktoken` ⇒ `token_cost.py` / `repeat_cost.py` 直接 ImportError
+  （**不退化**：token 数换成估算就没有比较意义了）
+- 语料不在 ⇒ `subjectivity_long.py` 打印「⊘ 语料不在」并以 0 退出（**跳过 ≠ 通过**）
+
+## ⚠️ 三条纪律
 
 1. **`out/` 里的输出是逐字留档**。改了探针就重跑、覆盖、在提交信息里说明改了什么 ——
    不许手改输出。
-2. **WITHOUT 侧的答案（`plugin_gap.py` 里的 `WITHOUT_ANSWERS`）是实验记录**，
-   改它就是改实验。要换问题就换一批、重新逐字记录。
+2. **WITHOUT 侧的答案是实验记录**（`plugin_gap.py` 里的 `WITHOUT_ANSWERS`、
+   `long_scenario.py` 的压缩策略）—— 改它就是改实验。要换问题就换一批、重新逐字记录。
+3. **成本类读数必须同时报「答案项数」**。踩过：窄查询返回 0 项时，错误回包的
+   171 tokens 差点被读成「插件省 0.42×」—— **「没答到」会被当成「很便宜」**。
