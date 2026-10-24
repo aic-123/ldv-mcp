@@ -14,6 +14,7 @@
 | `eval_rigor.py` | 位置扫描 / 多针 / 重复取均值（对齐 RAGAS 检索侧） | **tiktoken** |
 | `metamorphic.py` | 八条蜕变关系（加/删/改/换序后答案该怎么变） | 无 |
 | `real_model.py` | **真模型**：位置扫描 / 长度扫描 / 编造率 | **DeepSeek key**（仓库外） |
+| `real_scale.py` | **长上下文 × 三种给法**（全塞 / 窄查询 / 宽 limit）对照 | **DeepSeek key**（仓库外） |
 
 结论与读数见：
 
