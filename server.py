@@ -212,6 +212,7 @@ def _tool_orient(a: dict) -> dict:
                  "usage_enabled": app._usage_dir is not None and in_store}
     if nodes is not None:
         st = S.status(_spec_dir(corpus), nodes)
+        out["derived"] = dict(app.derived or {})   # agent 敲定的派生维度（field → N 项）
         out["lens"] = {"frozen": st.get("frozen"), "id": st.get("id"),
                        "generated_by": st.get("generated_by"),
                        "rationale": st.get("rationale"),
@@ -310,8 +311,17 @@ def _tool_ask(a: dict) -> dict:
 
     nodes = r.get("nodes") or []
     V.check_order([n["did"] for n in nodes], [n["did"] for n in nodes])
+    # ★ 本次查询用到了哪些**派生维度**（agent 建的轴，不是材料写的）——
+    #   必须报：查 `topic=DAPO` 与查 `type=立场` 的证据等级不同。
+    dfields = set(app.derived or {})
+    derived_used = sorted({k for k in (req + forb)
+                           if k.split("=", 1)[0] in dfields})
     return {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
             "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
+            "derived_used": derived_used,
+            "derived_note": ("本次用到的维度里，这些是 **agent 派生的**"
+                             "（不是材料里写的）—— 当线索用，别当事实"
+                             if derived_used else ""),
             "lens": ({"id": spec.get("id"), "generated_by": spec.get("generated_by"),
                       "corpus_fingerprint": spec.get("corpus_fingerprint")}
                      if spec else None),
@@ -378,6 +388,147 @@ def _tool_drill(a: dict) -> dict:
             "usage_enabled": app._usage_dir is not None and in_store}
 
 
+def _tool_derive(a: dict) -> dict:
+    """agent **敲定一个派生维度** —— 词汇表里没有的轴，它自己建。
+
+    ★ 不是新能力，是把内核已有的机制暴露给 agent：`influence` 维度
+      （v0.1.36）就是这么来的 —— 算出来，叠加成 `field=值` 键，
+      **不写回材料**，删掉 sidecar 即逐字回到原状（D7 判据守这条）。
+    ★ 三条纪律（沿用内核 `_meta` 的约定）：
+        `what` 这维度是什么 · `why` 为什么它切得开（理由原文，必填）
+        `derived_from` 从哪来（原材料 / 模型推断 —— **必填**：这一栏决定
+        答案里敢不敢把它当事实）
+    ⚠️ 派生维度**不改材料** ⇒ 语料指纹不变 ⇒ 透镜仍有效；但**词汇表变了**
+      ⇒ 答案可能变。两者都报，不藏。
+    """
+    corpus = a.get("corpus", "")
+    nodes, in_store = _corpus_dir(corpus)
+    if nodes is None or not in_store:
+        raise ValueError("只能给产品 store 下的私人语料加派生维度（内置语料只读）")
+    field = str(a.get("name") or "").strip()
+    values = a.get("values") or {}
+    why = str(a.get("rationale") or "").strip()
+    frm = str(a.get("derived_from") or "").strip()
+    if not field or not isinstance(values, dict) or not values:
+        raise ValueError("缺 name 或 values（{id: 值}）")
+    if not why:
+        raise ValueError("缺 rationale —— 说不清为什么这个维度切得开，就不许建")
+    if not frm:
+        raise ValueError("缺 derived_from —— 「从哪来」决定答案里敢不敢把它当事实"
+                         "（原材料 / 模型推断，必填）")
+
+    app, _ = _app(corpus)
+    unknown = sorted(set(str(k) for k in values) - set(app.nodes))
+    if unknown:
+        raise S.SpecError(f"这些 id 不在语料里：{unknown[:5]}"
+                          + (f"…共 {len(unknown)} 个" if len(unknown) > 5 else ""))
+    ddir = nodes.parent / "derived"
+    ddir.mkdir(parents=True, exist_ok=True)
+    doc = {"_meta": {"field": field,
+                     "what": str(a.get("what") or f"agent 派生维度 {field}"),
+                     "why": why,
+                     "derived_from": frm,
+                     "generated_by": _actor(a),
+                     "derived_at": datetime.now().isoformat(timespec="seconds")},
+           "values": {str(k): str(v) for k, v in sorted(values.items())}}
+    p = ddir / f"{field}.json"
+    tmp = p.with_suffix(".tmp")
+    io.open(tmp, "w", encoding="utf-8", newline="\n").write(
+        json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True))
+    os.replace(tmp, p)                       # 原子替换：不留半份
+    keys = sorted({f"{field}={v}" for v in doc["values"].values()})
+    return {"ok": True, "field": field, "n_items": len(doc["values"]),
+            "keys_added": keys, "path": str(p),
+            "derived_from": frm, "generated_by": _actor(a),
+            "note": "材料没动（指纹不变、透镜仍有效），但词汇表多了这些键 ⇒ "
+                    "答案可能变。删掉这个文件即逐字回到原状"}
+
+
+def _tool_undo(a: dict) -> dict:
+    """反事实：**删掉一个项，看什么会变，然后原样恢复**。
+
+    ★ 这是「推理」四件事里的反事实那一件（删了会怎样）。`entry.py` 本身只读
+      （不 insert / remove / 落盘）—— 插件继承只读就把这件能力丢了。
+      2026-10-24 按「打包成插件只舍弃自由度、不牺牲能力」补回来。
+    ★ 做法：指纹 → 快照 → 真删 → diff → 读回恢复 → **指纹逐字比过才敢报成功**。
+      恢复不了就是红，不是静默（「恢复了」与「没删成」在看答时长得一样）。
+    """
+    corpus = a.get("corpus", "")
+    app, in_store = _app(corpus)
+    iid = str(a.get("id") or "").strip()
+    if not iid:
+        raise ValueError("缺 id —— 要问「删了谁会怎样」")
+    if iid not in app.nodes:
+        raise S.SpecError(f"语料里没有这一项：{iid}")
+    plugin = str(a.get("plugin") or "keyset")
+    V.check_plugin(plugin)
+    req = list(a.get("require") or [])
+    forb = list(a.get("forbid") or [])
+    chk = V.check_keys(app.all_keys, req, forb)
+    if not chk["ok"]:
+        return {"ok": False, "out_of_structure": True, **chk}
+
+    from ldv.core import persist as P
+
+    k = app.ensure(plugin)
+    fp_before = P._fingerprint(k)                  # ① 删前指纹
+    snap = P.to_dict(k)                            # ② 快照
+    before = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
+    mem_before = {d.did: set(k.members_of(d)) for d in k.all_directions()}
+
+    # ③ 三处**一起**摘 —— 这是这个工具的关键（第一版只摘内核 ⇒ 答案没变）：
+    #    `answer_set` 从 App 的键表算，内核只负责「一支里有哪些项」。
+    #    两个面不同步，反事实就是假的（删了项，答案照旧，还会报「没丢」）。
+    saved_keys = app.keys_of.pop(iid)
+    saved_node = app.nodes.pop(iid)
+    path = k.remove(iid)
+    after = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
+    lost_dirs = [d.did for d in k.all_directions()
+                 if iid in mem_before.get(d.did, ()) and iid not in k.members_of(d)]
+
+    # ④ 恢复：三个面一起放回，内核用快照读回（新对象换掉旧的）
+    app.keys_of[iid] = saved_keys
+    app.nodes[iid] = saved_node
+    app.kernels[plugin] = P.from_dict(snap, k.plugin)
+    restored = app.ensure(plugin)
+    back = set(app.query({"require": req, "forbid": forb}).get("answer_ids") or [])
+    ok_restore = (back == before) and (P._fingerprint(restored) == fp_before)
+
+    return {"ok": True, "corpus": app.corpus_name, "removed": iid,
+            "cone": list(path),
+            "answer_lost": sorted(before - after),
+            "answer_gained": sorted(after - before),
+            "directions_that_lost_it": lost_dirs[:12],
+            "restored": ok_restore,
+            "restore_note": ("删后答案与指纹都与删前逐字相同 ⇒ 恢复成功"
+                             if ok_restore else "**恢复失败** —— 这一趟不算数"),
+            "note": "反事实只在内存里发生过；材料一个字节没动"}
+
+
+def _tool_next(a: dict) -> dict:
+    """反思：**此刻该干什么** —— 后果三档，不是分数。
+
+    档内按受影响成员数降序（影响面定序）；分档管「什么时候做」，排序管「先做哪个」。
+    ⚠️ 三个桶都是清单（`可忽略` 也列），由调用方决定显不显示。
+    ★ 也是能力补齐：反思层（动机三档）内核早就有，插件原来够不着。
+    """
+    corpus = a.get("corpus", "")
+    app, _ = _app(corpus)
+    plugin = str(a.get("plugin") or "keyset")
+    V.check_plugin(plugin)
+    from ldv.core import reflect as R
+
+    k = app.ensure(plugin)
+    g = R.graded(k, cap=a.get("cap"))
+    out: dict = {"ok": True, "corpus": app.corpus_name, "plugin": plugin,
+                 "必须": len(g.get("必须", [])), "可延后": len(g.get("可延后", [])),
+                 "可忽略": len(g.get("可忽略", []))}
+    limit = int(a.get("limit") or 5)
+    out["清单"] = {tier: g.get(tier, [])[:limit] for tier in ("必须", "可延后")}
+    out["note"] = ("按**后果**分档：填错会让结论错 ⇒ 必须；只是不全 ⇒ 可延后；"
+                   "无差别 ⇒ 可忽略。不是分数，没有置信度")
+    return out
+
 TOOLS = [
     {"name": "orient",
      "description": "「我记得」—— 私人语料 / 冻结的透镜（理由+指纹+是否过期）/ "
@@ -422,10 +573,48 @@ TOOLS = [
                          "forbid": {"type": "array", "items": {"type": "string"}},
                          "actor": {"type": "string"}},
                      "required": ["did", "require"]}},
+    {"name": "derive",
+     "description": "agent 敲定一个**派生维度**（词汇表里没有的轴，它自己建）—— "
+                    "不写回材料，删 sidecar 即逐字回退。必填理由与「从哪来」。",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "name": {"type": "string", "description": "维度名，如 topic"},
+                         "values": {"type": "object",
+                                    "description": "{节点 id: 取值}"},
+                         "rationale": {"type": "string",
+                                       "description": "为什么这个维度切得开（必填）"},
+                         "derived_from": {"type": "string",
+                                          "description": "原材料 / 模型推断（必填）—— "
+                                                         "决定答案里敢不敢把它当事实"},
+                         "what": {"type": "string"}},
+                     "required": ["name", "values", "rationale", "derived_from"]}},
+    {"name": "undo",
+     "description": "反事实：删掉一个项，看答案丢什么、哪些方向少成员，然后**原样恢复**"
+                    "（指纹逐字比对过才报成功）。材料一个字节没动。",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "id": {"type": "string", "description": "要删来看后果的项"},
+                         "require": {"type": "array", "items": {"type": "string"}},
+                         "forbid": {"type": "array", "items": {"type": "string"}},
+                         "plugin": {"type": "string"}},
+                     "required": ["id"]}},
+    {"name": "next",
+     "description": "反思：此刻该干什么 —— 后果三档（必须/可延后/可忽略），"
+                    "不是分数、没有置信度。",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "corpus": {"type": "string"},
+                         "plugin": {"type": "string"},
+                         "cap": {"type": "integer"},
+                         "limit": {"type": "integer",
+                                   "description": "每档最多列几条（默认 5）"}}}},
 ]
 
 _IMPL = {"orient": _tool_orient, "ask": _tool_ask,
-         "remember": _tool_remember, "drill": _tool_drill}
+         "remember": _tool_remember, "drill": _tool_drill,
+         "derive": _tool_derive, "undo": _tool_undo, "next": _tool_next}
 
 
 # ── JSON-RPC 骨架（零依赖：手写，不引第三方） ───────────────────────────────

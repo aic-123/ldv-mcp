@@ -5,7 +5,7 @@
 判的不是「服务器起来了」，是**每一件产品承诺的事真的发生了**：
 
     S1  initialize 握手，协议版本/能力/名字都对
-    S2  工具面是**四件**（orient / ask / remember / drill）—— 真人零动作
+    S2  工具面 = **四件动作 + 三件能力** —— 真人零动作，能力不缩水
     S3  orient 报词汇表 + 项数（「我记得」）
     S4  ask 正常：支序 + 查询式 + 透镜字段 + 出处摘要
     S5  ★ 未知键 ⇒ isError（第一道闸真的在挡，不是 prompt）
@@ -19,6 +19,9 @@
     S12 ★ 出处摘要：buckets 之和 == n_answer；内置语料全是模型填的
     S13 ★ 演员分解：agent 下钻算有用，但**谁钻的可分解**
     S14 ★ remember：写节点 / 同 id 不覆写 / 写完透镜报 stale（材料变 ⇒ 认识作废）
+    S15 ★ derive：agent 敲定派生维度 ⇒ 能查、标为派生；删 sidecar ⇒ 逐字回退
+    S16 ★ undo：反事实（删了会怎样）⇒ 答案丢它；恢复后答案与指纹逐字相同
+    S17 ★ next：反思三档（必须/可延后/可忽略）都有读数
 """
 from __future__ import annotations
 
@@ -121,8 +124,9 @@ def main() -> int:
 
         r = c.call("tools/list")
         names = [t["name"] for t in (r.get("result") or {}).get("tools", [])]
-        chk("S2", "★ 工具面是四件（真人零动作：orient/ask/remember/drill）",
-            names == ["orient", "ask", "remember", "drill"], f"{names}")
+        chk("S2", "★ 工具面 = 四件动作 + 三件能力（真人零动作，能力不缩水）",
+            names == ["orient", "ask", "remember", "drill",
+                      "derive", "undo", "next"], f"{names}")
 
         o = tool(c, "orient", {"corpus": "mine"})
         keys = o["out"].get("keys") or []
@@ -243,11 +247,51 @@ def main() -> int:
             f"写1={m1['out'].get('written')}｜写2={m2['out'].get('written')}"
             f"｜透镜 stale={(o4['out'].get('lens') or {}).get('stale')}"
             f"｜项数 {o4['out'].get('n_items')}")
+        # ── S15 derive：agent 敲定派生维度 ⇒ 能查；删 sidecar ⇒ 逐字回退 ──
+        d = tool(c, "derive", {"corpus": "mine", "name": "topic",
+                               "values": {"stance-0001": "DAPO", "stance-0002": "DrGRPO",
+                                          "stance-0003": "GRPO"},
+                               "rationale": "这三条立场分别对着三篇论文，按论文归组能切开",
+                               "derived_from": "模型推断（读 title/scope 后归的组）"})
+        qd = tool(c, "ask", {"corpus": "mine", "require": ["topic=DAPO"]})
+        ok_derive = (d["out"].get("ok") is True
+                     and "topic=DAPO" in (d["out"].get("keys_added") or [])
+                     and qd["out"].get("ok") is True
+                     and qd["out"].get("answer_ids") == ["stance-0001"]
+                     and "topic=DAPO" in (qd["out"].get("derived_used") or []))
+        # 删掉 sidecar ⇒ 键消失（材料一个字节没动）
+        side = corpus.parent / "derived" / "topic.json"
+        side.unlink()
+        qd2 = tool(c, "ask", {"corpus": "mine", "require": ["topic=DAPO"]})
+        chk("S15", "★ derive：派生维度能查、被标为派生；删 sidecar ⇒ 逐字回退",
+            ok_derive and qd2["isError"] is True,
+            f"derive={d['out'].get('ok')}｜键 {d['out'].get('keys_added')}"
+            f"｜查到 {qd['out'].get('answer_ids')}｜派生标记 {qd['out'].get('derived_used')}"
+            f"｜删后 {('拒收' if qd2['isError'] else '仍可查')}")
+
+        # ── S16 undo：反事实 —— 删了会怎样，然后原样恢复 ────────────────
+        u = tool(c, "undo", {"corpus": "mine", "id": "stance-0001",
+                             "require": ["type=立场"]})
+        chk("S16", "★ undo：删项 ⇒ 答案丢它；恢复后答案与指纹逐字相同",
+            u["out"].get("ok") is True
+            and "stance-0001" in (u["out"].get("answer_lost") or [])
+            and u["out"].get("restored") is True,
+            f"丢 {u['out'].get('answer_lost')}｜锥 {len(u['out'].get('cone') or [])} 层"
+            f"｜恢复 {u['out'].get('restored')}")
+
+        # ── S17 next：反思三档 ─────────────────────────────────────────
+        n = tool(c, "next", {"corpus": "mine"})
+        chk("S17", "★ next：后果三档都有读数（不是分数）",
+            n["out"].get("ok") is True
+            and all(isinstance(n["out"].get(t), int) for t in ("必须", "可延后", "可忽略")),
+            f"必须 {n['out'].get('必须')}｜可延后 {n['out'].get('可延后')}"
+            f"｜可忽略 {n['out'].get('可忽略')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S14）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S17）")
     return 1 if FAIL else 0
 
 
