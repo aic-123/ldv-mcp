@@ -167,6 +167,30 @@ def _safe_name(s: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(s))
 
 
+def _value_counts(app) -> dict:
+    """枚举字段的**取值分布**：`type` / `evidence_status` / `source.kind` 各有几个值、各多少节点。
+
+    ★ 为什么 orient 要给这个（2026-10-24 有无插件对比实验的直接产物）：
+      无插件时，agent 把语料里的「判断点」说成「议题」「立场」—— 词都对、
+      分类错。根因是它**不知道这份语料有自己的类型体系**（`type` 有 7 个取值）。
+      键名（`type`）不等于体系（`type=议题` / `type=判断点` / …）。
+      ⇒ 把取值分布摆出来，agent 提问时才知道该用哪个桶。
+    """
+    fields = ("type", "evidence_status", "source")
+    out: dict[str, dict[str, int]] = {}
+    for f in fields:
+        counts: dict[str, int] = {}
+        for node in app.nodes.values():
+            v = (node.fields or {}).get(f)
+            if isinstance(v, dict):
+                v = v.get("kind")
+            if isinstance(v, str) and v:
+                counts[v] = counts.get(v, 0) + 1
+        if counts:
+            out[f] = dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    return out
+
+
 def _tool_orient(a: dict) -> dict:
     """agent 的「**我记得**」—— 私人 store 的全貌。会话开始调一次。
 
@@ -180,6 +204,11 @@ def _tool_orient(a: dict) -> dict:
     out: dict = {"ok": True, "corpus": app.corpus_name,
                  "n_items": len(app.nodes), "n_keys": len(app.all_keys),
                  "keys": sorted(app.all_keys),
+                 # ★ 取之分布（2026-10-24 有无插件对比实验发现的缺口）：
+                 #   无插件时 agent 把「判断点」说成「议题/立场」—— 词都对、
+                 #   分类错，因为它不知道**这份语料有自己的类型体系**。
+                 #   ⇒ orient 不只给键名，还给「这个键有哪几个取值、各多少节点」。
+                 "value_counts": _value_counts(app),
                  "usage_enabled": app._usage_dir is not None and in_store}
     if nodes is not None:
         st = S.status(_spec_dir(corpus), nodes)
