@@ -24,8 +24,8 @@
     S17 ★ next：反思三档（必须/可延后/可忽略）都有读数
     S18 ★ 跨进程写锁：别人持锁 ⇒ StoreBusy（不静默写）；S18b 被杀进程留下陈旧锁
     S19 ★ derive 同名维度不许静默覆盖（要换必须显式 force）
-    S20 ★ read：读得到标题与正文，正文与文件逐字相同
-    S21 ★ read 截断必须明说（truncated + note 报字数和条数）
+    S20 ★ ask(with_body)：连正文一起返回，正文与文件逐字相同
+    S21 ★ with_body 截断必须明说（truncated + note 报字数和条数）
 """
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ def main() -> int:
         names = [t["name"] for t in (r.get("result") or {}).get("tools", [])]
         chk("S2", "★ 工具面 = 四件动作 + 三件能力（真人零动作，能力不缩水）",
             names == ["orient", "ask", "remember", "drill",
-                      "read", "derive", "undo", "next"], f"{names}")
+                      "derive", "undo", "next"], f"{names}")
 
         o = tool(c, "orient", {"corpus": "mine"})
         keys = o["out"].get("keys") or []
@@ -346,39 +346,33 @@ def main() -> int:
             f"建={d1['out'].get('ok')}｜再建 {'拒' if d2['isError'] else '居然过了'}"
             f"｜force 后 {d3['out'].get('ok')}")
 
-        # ── S20 read：读内容 —— 与文件逐字相同，且 id 与那一支的成员一致 ──
-        qr = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
-        did_r = (qr["out"].get("nodes") or [{}])[0].get("did", "")
-        rd = tool(c, "read", {"corpus": "mine", "did": did_r})
-        first = (rd["out"].get("items") or [{}])[0]
-        # ⚠️ id 与文件名不同（`stance-0001` vs `stance-0001-dapo-attribution.md`）
-        #   —— 按前缀找，别硬拼 `.md`
+        # ── S20 ask(with_body)：正文与文件逐字相同（读内容 = 查询的一个选项）──
+        qr = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"],
+                             "with_body": True})
+        first = ((qr["out"].get("bodies") or {}).get("items") or [{}])[0]
+        # ⚠️ id 与文件名不同（stance-0001 vs stance-0001-dapo-attribution.md）
         fpath = sorted(corpus.glob("stance-0001*.md"))[0]
-        raw = fpath.read_text(encoding="utf-8")
-        file_body = raw.split("---", 2)[2].strip()
-        chk("S20", "★ read：读得到标题与正文，且正文与文件**逐字相同**",
-            rd["out"].get("ok") is True
-            and first.get("id") == "stance-0001"
-            and bool(first.get("title"))
+        file_body = fpath.read_text(encoding="utf-8").split("---", 2)[2].strip()
+        nb = (qr["out"].get("bodies") or {})
+        chk("S20", "★ ask(with_body)：连正文一起返回，且与文件**逐字相同**",
+            first.get("id") == "stance-0001" and bool(first.get("title"))
             and first.get("body") == file_body
-            # ⚠️ 比的是**那一支的成员数**，不是整题答案数 ——
-            #   分支是答案的划分（D9 只有 1 项，整题 3 项）
-            and rd["out"].get("n_matched")
-            == (qr["out"].get("nodes") or [{}])[0].get("n_members"),
-            f"{rd['out'].get('n_matched')} 项 / 返回 {rd['out'].get('n_returned')}"
+            and nb.get("n_matched") == qr["out"].get("n_answer"),
+            f"{nb.get('n_matched')} 项 / 返回 {nb.get('n_returned')}"
             f"｜标题 {str(first.get('title'))[:24]}"
             f"｜正文 {len(first.get('body') or '')} 字 vs 文件 {len(file_body)} 字"
             f"｜逐字相同 {first.get('body') == file_body}")
 
         # ── S21 截断必须明说 ──────────────────────────────────────────
-        rt = tool(c, "read", {"corpus": "mine", "ids": ["stance-0001"],
-                              "max_chars": 10})
-        it = (rt["out"].get("items") or [{}])[0]
-        chk("S21", "★ read 截断必须明说（truncated + note 里报字数和条数）",
+        rt = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"],
+                              "with_body": True, "max_chars": 10, "limit": 1})
+        it = ((rt["out"].get("bodies") or {}).get("items") or [{}])[0]
+        nb2 = rt["out"].get("bodies") or {}
+        chk("S21", "★ with_body 截断必须明说（truncated + note 报字数和条数）",
             it.get("truncated") is True and len(it.get("body") or "") == 10
-            and "截到" in str(rt["out"].get("note")),
+            and "截到" in str(nb2.get("note")),
             f"truncated={it.get('truncated')}｜{len(it.get('body') or '')} 字"
-            f"｜原 {it.get('body_chars')} 字｜{str(rt['out'].get('note'))[:40]}")
+            f"｜原 {it.get('body_chars')} 字｜{str(nb2.get('note'))[:40]}")
 
         # ── S22 会话缓冲：曝光进缓冲、下钻标 promoted、会话之间不串 ──────
         sA = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"], "session": "sA"})
