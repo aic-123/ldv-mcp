@@ -52,6 +52,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "core"))          # 钉住的内核
 sys.path.insert(0, str(HERE))                   # 产品自己的包
 
+from checks import lock as L                    # noqa: E402
 from checks import validate as V                # noqa: E402
 from spec_store import store as S               # noqa: E402
 
@@ -288,10 +289,14 @@ def _tool_ask(a: dict) -> dict:
     if spec is None and lens and nodes_dir is not None:
         # ★ 自动冻结：agent 给了透镜就冻，**没有第二步动作**。
         #   理由必填 —— 说不清为什么这么分，就不算一个透镜。
-        cand = S.propose(_spec_dir(corpus), lens,
-                         rationale=str(a.get("rationale") or ""),
-                         generated_by=_actor(a), corpus_dir=nodes_dir)
-        S.freeze(_spec_dir(corpus), cand["candidate_id"], corpus_dir=nodes_dir)
+        #   ⚠️ 跨进程：propose+freeze 是一个「先查再写」的复合动作，必须持锁
+        #      —— 否则两个会话各冻一份，后写的赢且没人知道。
+        with L.store_lock(STORE):
+            if S.load(_spec_dir(corpus)) is None:
+                cand = S.propose(_spec_dir(corpus), lens,
+                                 rationale=str(a.get("rationale") or ""),
+                                 generated_by=_actor(a), corpus_dir=nodes_dir)
+                S.freeze(_spec_dir(corpus), cand["candidate_id"], corpus_dir=nodes_dir)
         spec = S.load(_spec_dir(corpus))
 
     plugin = ""
@@ -348,9 +353,6 @@ def _tool_remember(a: dict) -> dict:
     if not nid:
         raise ValueError("缺 id —— 记忆要有个能指回来的名字")
     p = nodes / (_safe_name(nid) + ".md")
-    if p.exists():
-        return {"ok": False, "written": False,
-                "why": f"已有一条 id={nid} 的记忆 —— 只追加不覆写；要补充就换一个 id"}
     fields = a.get("fields") or {}
     body = str(a.get("body") or "")
     filled_by = str(a.get("filled_by") or _actor(a))
@@ -359,9 +361,13 @@ def _tool_remember(a: dict) -> dict:
     for k in sorted(fields):
         lines.append(f"{k}: {json.dumps(fields[k], ensure_ascii=False)}")
     lines += ["---", "", body.rstrip() + chr(10)]
-    tmp = p.with_suffix(".tmp")
-    io.open(tmp, "w", encoding="utf-8", newline="\n").write(chr(10).join(lines))
-    os.replace(tmp, p)                       # 原子替换：不留半份
+    # ★ 跨进程：`create_exclusive` 是原子的（O_CREAT|O_EXCL），
+    #   不是「先 exists() 再写」—— 后者在两个会话之间是假检查。
+    with L.store_lock(STORE):
+        wrote = L.create_exclusive(p, chr(10).join(lines))
+    if not wrote:
+        return {"ok": False, "written": False,
+                "why": f"已有一条 id={nid} 的记忆 —— 只追加不覆写；要补充就换一个 id"}
     return {"ok": True, "written": True, "path": str(p), "id": nid,
             "filled_by": filled_by,
             "note": "语料变了 ⇒ 透镜指纹可能不符，下次 orient 会报 stale"}
@@ -432,10 +438,24 @@ def _tool_derive(a: dict) -> dict:
                      "derived_at": datetime.now().isoformat(timespec="seconds")},
            "values": {str(k): str(v) for k, v in sorted(values.items())}}
     p = ddir / f"{field}.json"
-    tmp = p.with_suffix(".tmp")
-    io.open(tmp, "w", encoding="utf-8", newline="\n").write(
-        json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True))
-    os.replace(tmp, p)                       # 原子替换：不留半份
+    force = bool(a.get("force"))
+    # ★ 跨进程：同名维度**不许静默覆盖**（第一版直接 replace ⇒ 两个会话
+    #   各建一个 topic，后写的赢且没人知道）。要换必须显式 force。
+    with L.store_lock(STORE):
+        if p.exists() and not force:
+            old = {}
+            try:
+                old = json.loads(io.open(p, encoding="utf-8").read()).get("_meta", {})
+            except (OSError, ValueError):
+                pass
+            raise S.SpecError(
+                f"派生维度 {field!r} 已经有了（{old.get('generated_by', '?')}"
+                f" @ {old.get('derived_at', '?')}）。要换请显式 force —— "
+                "「悄悄换了一个维度」与「主动换了」在看答案时长得一样")
+        tmp = p.with_suffix(".tmp")
+        io.open(tmp, "w", encoding="utf-8", newline="\n").write(
+            json.dumps(doc, ensure_ascii=False, indent=1, sort_keys=True))
+        os.replace(tmp, p)                   # 原子替换：不留半份
     keys = sorted({f"{field}={v}" for v in doc["values"].values()})
     return {"ok": True, "field": field, "n_items": len(doc["values"]),
             "keys_added": keys, "path": str(p),
@@ -587,7 +607,9 @@ TOOLS = [
                          "derived_from": {"type": "string",
                                           "description": "原材料 / 模型推断（必填）—— "
                                                          "决定答案里敢不敢把它当事实"},
-                         "what": {"type": "string"}},
+                         "what": {"type": "string"},
+                         "force": {"type": "boolean",
+                                   "description": "同名维度已存在时，显式覆盖"}},
                      "required": ["name", "values", "rationale", "derived_from"]}},
     {"name": "undo",
      "description": "反事实：删掉一个项，看答案丢什么、哪些方向少成员，然后**原样恢复**"

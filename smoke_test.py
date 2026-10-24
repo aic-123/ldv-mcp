@@ -22,6 +22,8 @@
     S15 ★ derive：agent 敲定派生维度 ⇒ 能查、标为派生；删 sidecar ⇒ 逐字回退
     S16 ★ undo：反事实（删了会怎样）⇒ 答案丢它；恢复后答案与指纹逐字相同
     S17 ★ next：反思三档（必须/可延后/可忽略）都有读数
+    S18 ★ 跨进程写锁：别人持锁 ⇒ StoreBusy（不静默写）；S18b 被杀进程留下陈旧锁
+    S19 ★ derive 同名维度不许静默覆盖（要换必须显式 force）
 """
 from __future__ import annotations
 
@@ -287,11 +289,66 @@ def main() -> int:
             f"必须 {n['out'].get('必须')}｜可延后 {n['out'].get('可延后')}"
             f"｜可忽略 {n['out'].get('可忽略')}")
 
+        # ── S18 跨进程写锁：另一个进程拿着锁时，必须报错而不是静默写 ────
+        # 子进程拿住锁 3 秒；本进程用 wait=0.2 去抢 ⇒ 必须 StoreBusy。
+        holder = (
+            "import sys, time; sys.path.insert(0, sys.argv[1]);"
+            "from checks import lock as L;"
+            "ctx = L.store_lock(sys.argv[2]); ctx.__enter__();"
+            "print('HELD', flush=True); time.sleep(3)"
+        )
+        hp = subprocess.Popen([PY, "-c", holder, str(HERE), str(store)],
+                              stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        assert hp.stdout.readline().strip() == "HELD"
+        sys.path.insert(0, str(HERE))
+        from checks import lock as L
+
+        try:
+            with L.store_lock(store, wait=0.2):
+                busy = False
+        except L.StoreBusy:
+            busy = True
+        hp.kill()
+        hp.wait()
+        chk("S18", "★ 跨进程写锁：别人持锁时 ⇒ StoreBusy（不静默写）",
+            busy is True, f"StoreBusy={busy}")
+        # ⚠️ 被 kill 的进程**不会**清掉 .lock —— 那正是「陈旧锁」的真实形状
+        #   （文档写的 120 秒接管就是为它准备的）。测试自己收拾现场，
+        #   否则后面的写会一直撞 StoreBusy（实测：S19 第一次就这么红的）。
+        stale = store / ".lock"
+        left_behind = stale.is_file()
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+        chk("S18b", "★ 被杀进程留下陈旧锁（文档写的接管场景，测试自己清场）",
+            left_behind is True, f"遗留 .lock={left_behind}")
+
+        # ── S19 derive 不许静默覆盖（同名维度第二次必须拒；force 才覆盖）──
+        # ⚠️ S15 结尾把 sidecar 删了 ⇒ 这里得先建一次，再试第二次。
+        d1 = tool(c, "derive", {"corpus": "mine", "name": "topic",
+                                "values": {"stance-0001": "DAPO"},
+                                "rationale": "先建一个", "derived_from": "模型推断"})
+        d2 = tool(c, "derive", {"corpus": "mine", "name": "topic",
+                                "values": {"stance-0001": "DAPO"},
+                                "rationale": "再建一次同名维度",
+                                "derived_from": "模型推断"})
+        d3 = tool(c, "derive", {"corpus": "mine", "name": "topic",
+                                "values": {"stance-0001": "DAPO"},
+                                "rationale": "显式覆盖", "derived_from": "模型推断",
+                                "force": True})
+        chk("S19", "★ derive 同名维度不许静默覆盖（要换必须显式 force）",
+            d1["out"].get("ok") is True and d2["isError"] is True
+            and "force" in str(d2["out"].get("_raw", ""))
+            and d3["out"].get("ok") is True,
+            f"建={d1['out'].get('ok')}｜再建 {'拒' if d2['isError'] else '居然过了'}"
+            f"｜force 后 {d3['out'].get('ok')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S17）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S19）")
     return 1 if FAIL else 0
 
 

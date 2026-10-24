@@ -63,8 +63,9 @@
 | 声明可复现、有来历 | `spec_store`：首次使用即冻结 + 理由原文 + 语料指纹，语料变则作废 |
 | 每次回答能重放 | 查询结果带 `query`（查询式）与 `spec`（声明指纹） |
 | 使用记录只改次序、不改答案 | 内核的两段通道原样：查询进缓冲，下钻才 promote |
+| **两个会话指向同一 store 不会互相踩** | `checks/lock.py`：写锁（拿不到 ⇒ `StoreBusy`，不静默）+ 原子创建 + 同名维度不许静默覆盖；被杀进程的陈旧锁 120 秒后接管并记账 |
 
-`python smoke_test.py` 十七条判据（S1–S17）真起一个 MCP 会话跑完七件工具，含「未知键必须被拒」「工具面就是这七件」「支序必须与内核逐字相同」「remember 同 id 不覆写且之后透镜报 stale」「derive 删 sidecar 即逐字回退」「undo 恢复后答案与指纹逐字相同」。
+`python smoke_test.py` 十九条判据（S1–S19）真起一个 MCP 会话跑完七件工具，含「未知键必须被拒」「工具面就是这七件」「支序必须与内核逐字相同」「remember 同 id 不覆写且之后透镜报 stale」「derive 删 sidecar 即逐字回退」「undo 恢复后答案与指纹逐字相同」。
 
 ## 两条放开的边界，和一条没放的
 
@@ -80,7 +81,7 @@
 ```
 ldv-mcp/
   server.py          MCP stdio 服务器（薄适配）
-  smoke_test.py      十七条冒烟判据（S1–S17）
+  smoke_test.py      十九条冒烟判据（S1–S19）
   checks/            发货自带的判据（键 / 白名单 / 支序）
   spec_store/        声明仓库（冻结 + 指纹 + 账本）
   presets/           三个开箱方向函数（人话 + 什么时候选哪个）
