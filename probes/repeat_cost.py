@@ -125,8 +125,11 @@ def main() -> int:
         rd = c.tool("ask", {"corpus": "c", "require": [], "with_body": True,
                             "limit": N_NOTES + 10})
         d0 = json.loads(rd)
-        vals = {it["id"]: (it.get("fields") or {}).get("project")
-                for it in ((d0.get("bodies") or {}).get("items") or [])}
+        # ⚠️ bodies 已并入 items；id 走 answer_ids 与 items 按位置 zip
+        #   （少了这一步 values 是空的 ⇒ derive 没建成 ⇒ project= 全是未知键）
+        vals = {nid: (it.get("fields") or {}).get("project")
+                for nid, it in zip(d0.get("answer_ids") or [],
+                                   d0.get("items") or [])}
         vals = {k: v for k, v in vals.items() if v}
         c.tool("derive", {"corpus": "c", "name": "project", "values": vals,
                           "rationale": "按项目看", "derived_from": "材料字段 project"})
@@ -168,7 +171,8 @@ def main() -> int:
                              "with_body": True, "limit": 10})
         # 直接用 id 更贴近「按记录号找」：用 type 过滤后确认它在结果里
         d = json.loads(res)
-        ids = [it["id"] for it in ((d.get("bodies") or {}).get("items") or [])]
+        ids = [nid for nid, _it in zip(d.get("answer_ids") or [],
+                                       d.get("items") or [])]
         found = old[0] in ids
         print(f"\nB 历史检索（问第 1 条 {old[0]}，它在窗口外）")
         print(f"   WITH     {tok(res) + tok(q_old)} tokens｜找到了：{found}"

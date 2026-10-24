@@ -135,12 +135,25 @@ def run_scale(c: MCP, corpus: str, notes, label: str) -> list[tuple[str, int, in
         doc0 = json.loads(rd)
     except ValueError:
         doc0 = {}
-    vals = {it["id"]: (it.get("fields") or {}).get("project")
-            for it in ((doc0.get("bodies") or {}).get("items") or [])}
+    # ⚠️ bodies 已并入 items（2026-10-24 ask 改形状）；id 走 answer_ids，
+    #   与 items 按位置 zip —— 少了这一步，values 是空的 ⇒ derive 没建成
+    #   ⇒ project=alpha 变成未知键 ⇒ 后面每一行量的都是**错误回包**。
+    vals = {nid: (it.get("fields") or {}).get("project")
+            for nid, it in zip(doc0.get("answer_ids") or [],
+                               doc0.get("items") or [])}
     vals = {k: v for k, v in vals.items() if v}
     dv = c.tool("derive", {"corpus": corpus, "name": "project", "values": vals,
                            "rationale": "按项目看", "derived_from": "材料字段 project"})
-    one_time = tok(rd) + tok(dv)          # 一次性成本：读全库 + 建维度
+    # ⚠️ 读数里**去掉机器相关字段**：derive 的返回带 `path`（临时目录的绝对路径），
+    #   每次跑长度都不同 ⇒ 同一个读数会抖 ±2 tokens。量成本量的是 agent 要读的内容，
+    #   不是本机路径。去掉它，读数才复现（两次跑逐字相同）。
+    #   ⚠️ `dv` 是**原始 JSON 文本**（本探针的 tool() 不解析）—— 先 json.loads。
+    try:
+        dv_doc = json.loads(dv)
+    except ValueError:
+        dv_doc = {}
+    dv_clean = {k: v for k, v in dv_doc.items() if k not in ("path", "corpus")}
+    one_time = tok(rd) + tok(json.dumps(dv_clean, ensure_ascii=False))
     # 窗口：最近 WINDOW_NOTES 条（+ 一句摘要代表更早的）
     window = [n[3] for n in notes[-WINDOW_NOTES:]]
     earlier = len(notes) - len(window)
@@ -149,7 +162,11 @@ def run_scale(c: MCP, corpus: str, notes, label: str) -> list[tuple[str, int, in
     wo_base = tok(window_text)
 
     QS = [
-        ("窄：alpha 的坑", ["project=alpha", "type=坑"], 5),
+        # ⚠️ 这两个键必须**可能同时成立**：合成语料里 project 由 i%3 定、
+        #   type 也由 i%3 定 ⇒ project=alpha(i%3==0) 与 type=坑(i%3==1)
+        #   永远不相交 ⇒ 那一行量的其实是**空响应**（曾印成「插件省 0.42×」）。
+        #   换成 type=实验（i%3==0）才与 alpha 相容。
+        ("窄：alpha 的实验", ["project=alpha", "type=实验"], 5),
         ("中：beta 全部", ["project=beta"], 10),
         ("宽：所有实验", ["type=实验"], 20),
         ("元：整个库", [], 40),
