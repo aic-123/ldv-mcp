@@ -101,6 +101,7 @@ def main() -> int:
     print("\n① 位置扫描（Lost-in-the-Middle：同一个针，位置不同）")
     print("   位置   命中   答案")
     total_tok = 0
+    n_calls = 0
     # ⚠️ 用 len(notes) 算，别写死 —— 跳掉第 7 条之后只剩 11 条（写死 11 会越界）
     for label, idx in (("头", 0), ("中", len(notes) // 2), ("尾", len(notes) - 1)):
         win = list(notes)
@@ -113,6 +114,7 @@ def main() -> int:
                     key, "你只能依据下面的笔记回答；找不到就说「没有」。",
                     f"笔记：\n{ctx}\n\n问题：{Q}")
                 total_tok += used
+                n_calls += 1
             except (urllib.error.URLError, KeyError, TimeoutError) as e:
                 print(f"   请求失败：{type(e).__name__}: {str(e)[:60]}")
                 return 1
@@ -130,6 +132,7 @@ def main() -> int:
             key, "你只能依据下面的笔记回答；没有就说「没有」。",
             f"笔记：\n{ctx}\n\n问题：第 7 条笔记的指标和 batch 分别是多少？")
         total_tok += used
+        n_calls += 1
     except (urllib.error.URLError, KeyError, TimeoutError) as e:
         print(f"   请求失败：{type(e).__name__}: {str(e)[:60]}")
         return 1
@@ -164,6 +167,7 @@ def main() -> int:
                         key, "你只能依据下面的笔记回答；找不到就说「没有」。",
                         f"笔记：\n{ctx2}\n\n问题：{Q}")
                     total_tok += used
+                    n_calls += 1
                 except (urllib.error.URLError, KeyError, TimeoutError) as e:
                     print(f"   {n} 条 {label} 请求失败：{type(e).__name__}")
                     return 1
@@ -172,8 +176,9 @@ def main() -> int:
         print(f"   {n:>4}    {row[0]:>4}  {row[1]:>4}  {row[2]:>4}    ~{n * 12}")
 
     print("\n④ 成本")
-    print(f"   本次共 {total_tok} tokens（{REPEATS * 3 + 1} 次调用，"
-          f"均值 {total_tok / (REPEATS * 3 + 1):.0f}/次）")
+    # ⚠️ 次数必须**数出来**，不能写死：写死过两次（先 15 后 7，实际 25）
+    print(f"   本次共 {total_tok} tokens（{n_calls} 次调用，"
+          f"均值 {total_tok / max(1, n_calls):.0f}/次）")
     print("\n④ 说明")
     print("   · 位置偏差要**看三档的差**：只有「中」明显低于两端才算复现 Lost-in-the-Middle")
     print(f"   · {REPEATS} 次太少，只能看方向，不能当统计结论")
