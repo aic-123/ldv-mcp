@@ -108,6 +108,10 @@ class MCP:
         return json.loads(self.p.stdout.readline())
 
     def tool(self, name, args):
+        # ★ 探针验的是**结构**（支序 / 答案集 / 计数）⇒ 统一要 structure=True。
+        #   2026-10-24 起 ask 默认只交正文 + 句柄（id 留在本地）。
+        if name == "ask":
+            args = {"structure": True, **args}
         r = self.call("tools/call", {"name": name, "arguments": args})
         res = r.get("result") or {}
         txt = "".join(i.get("text", "") for i in (res.get("content") or []))
@@ -175,12 +179,12 @@ def main() -> int:
             print(f"   next_step={bad.get('next_step')}")
             rd = c.tool("ask", {"corpus": "notes", "require": [], "with_body": True,
                                 "limit": 40})
-            chars_with += len(json.dumps(rd.get("bodies") or {}, ensure_ascii=False))
+            chars_with += len(json.dumps(rd.get("items") or [], ensure_ascii=False))
             vals = {}
-            for it in ((rd.get("bodies") or {}).get("items") or []):
+            for nid, it in zip(rd.get("answer_ids") or [], rd.get("items") or []):
                 p = (it.get("fields") or {}).get("project")
                 if p:
-                    vals[it["id"]] = p
+                    vals[nid] = p
             dv = c.tool("derive", {"corpus": "notes", "name": "project",
                                    "values": vals,
                                    "rationale": "用户要按项目看；project 是材料自带字段，"
@@ -201,7 +205,7 @@ def main() -> int:
                 val = facts[nid2]["vals"][key2] if key2 else "不可复现"
                 r = c.tool("ask", {"corpus": "notes", "require": [],
                                    "with_body": True, "limit": 40})
-                bodies = json.dumps(r.get("bodies") or {}, ensure_ascii=False)
+                bodies = json.dumps(r.get("items") or [], ensure_ascii=False)
                 chars_with += len(bodies)
                 drift[i][lab] = {"with": val in bodies,
                                  "without": any(val in x for x in ctx),
@@ -211,9 +215,9 @@ def main() -> int:
 
     # ── 第 14 天：全量重建派生维度（**这是设计**，不是补丁）─────────
     rd2 = c.tool("ask", {"corpus": "notes", "require": [], "with_body": True, "limit": 60})
-    chars_with += len(json.dumps(rd2.get("bodies") or {}, ensure_ascii=False))
-    vals2 = {it["id"]: (it.get("fields") or {}).get("project")
-             for it in ((rd2.get("bodies") or {}).get("items") or [])}
+    chars_with += len(json.dumps(rd2.get("items") or [], ensure_ascii=False))
+    vals2 = {nid: (it.get("fields") or {}).get("project")
+             for nid, it in zip(rd2.get("answer_ids") or [], rd2.get("items") or [])}
     vals2 = {k: v for k, v in vals2.items() if v}
     dv2 = c.tool("derive", {"corpus": "notes", "name": "project", "values": vals2,
                             "rationale": "全量重建：第 2 天那份只覆盖当时那几条",
@@ -235,7 +239,7 @@ def main() -> int:
     for cat, q, req, key, nid in QS:
         r = c.tool("ask", {"corpus": "notes", "require": req, "with_body": True,
                            "limit": 40})
-        bodies = json.dumps(r.get("bodies") or {}, ensure_ascii=False)
+        bodies = json.dumps(r.get("items") or [], ensure_ascii=False)
         chars_with += len(bodies)
         ids = r.get("answer_ids") or []
         mark = ""

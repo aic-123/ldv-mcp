@@ -2,8 +2,8 @@
 场景 A｜真人只说一句话，agent 自己 orient + ask
 ========================================================================
 $ orient（内置 36 项，会话开始）
-  → 语料 内置语料（ldv/corpus）｜36 项｜24 个可用键｜透镜 frozen=None
-  → 前 6 个键：['aliases', 'cues', 'evidence_status', 'evidence_status=有争议', 'evidence_status=未验证', 'filled_by']
+  → 语料 None｜None 项｜None 个可用键｜透镜 frozen=None
+  → 前 6 个键：[]
 
 $ ask require=["type=概念"]
   → 8 项 / 2 支｜ordered_by=default
@@ -33,5 +33,5 @@ $ orient（私人语料）
 ========================================================================
 $ ask require=["作者国籍=中国"]
   → ok=False｜out_of_structure=True
-  → 这些键不在词汇表里 —— 可能是拼错了；若确实没有这个维度，那是「超出结构」，请人介入，本层不猜
+  → 这些键不在词汇表里 —— 可能是拼错了；若确实没有这个维度，agent 自己补一个就行（derive），不用打断用户
   → 建议：{'作者国籍=中国': []}

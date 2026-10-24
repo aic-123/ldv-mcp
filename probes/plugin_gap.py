@@ -59,6 +59,10 @@ class MCP:
         return json.loads(self.p.stdout.readline())
 
     def tool(self, name, args):
+        # ★ 探针验的是**结构**（支序 / 答案集 / 计数）⇒ 统一要 structure=True。
+        #   2026-10-24 起 ask 默认只交正文 + 句柄（id 留在本地）。
+        if name == "ask":
+            args = {"structure": True, **args}
         r = self.call("tools/call", {"name": name, "arguments": args})
         res = r.get("result") or {}
         txt = "".join(i.get("text", "") for i in (res.get("content") or []))

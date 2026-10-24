@@ -83,6 +83,9 @@ class MCP:
 
     def tool(self, name, args):
         self.tools += 1
+        # ★ 探针验结构 ⇒ 统一要 structure=True（2026-10-24 起默认只给正文+句柄）
+        if name == "ask":
+            args = {"structure": True, **args}
         r = self.call("tools/call", {"name": name, "arguments": args})
         res = r.get("result") or {}
         txt = "".join(i.get("text", "") for i in (res.get("content") or []))

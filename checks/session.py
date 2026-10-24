@@ -132,3 +132,53 @@ def sessions(ldv_root: str | Path) -> list[str]:
     if not base.is_dir():
         return []
     return sorted(p.name for p in base.iterdir() if p.is_dir())
+
+
+# ── 句柄表：agent 只看「第几条」，id 留在这里 ────────────────────────────
+def handles_path(ldv_root: str | Path) -> Path:
+    """**按 ldv 一份**（不是按会话）—— 句柄是「刚才那批」的编号，与谁问的无关。"""
+    return Path(ldv_root) / "handles.json"
+
+
+def save_handles(ldv_root: str | Path, items: list[dict], *, qfp: str = "",
+                 require: list[str] | None = None,
+                 forbid: list[str] | None = None) -> None:
+    """记下「句柄 n → 条目」的映射。**只在本地** —— agent 只看到 n。
+
+    ★ 2026-10-24 用户定：正文交给 agent，id 之类的记录留在 ldv 里。
+      但动作（下钻 / 反事实）总得指到东西 ⇒ 用**句柄**：agent 说「第 3 条」，
+      服务端在这张表里查它到底是哪一条。
+    ⚠️ 每次 `ask` **覆盖** —— 它是「刚才那批」的编号，不是长期标识。
+      所以表里记下这次查询的 `require/forbid`：动作来时对不上 ⇒ **拒**，不猜。
+    """
+    doc = {"qfp": qfp,
+           "require": sorted(require or []), "forbid": sorted(forbid or []),
+           "items": {str(i + 1): {"id": it["id"], "title": it.get("title", "")}
+                     for i, it in enumerate(items)}}
+    _write(handles_path(ldv_root), doc)
+
+
+def resolve_handle(ldv_root: str | Path, n: int | str, *,
+                   require: list[str] | None = None,
+                   forbid: list[str] | None = None) -> tuple[dict | None, str]:
+    """句柄 → 条目记录。返回 `(记录 or None, 原因)`。
+
+    ⚠️ 查询对不上（`require/forbid` 不同）⇒ 拒 —— 否则「第 3 条」会指到
+      另一次查询的第 3 条，那是**静默指错**，比报错糟。
+    """
+    doc = _read(handles_path(ldv_root), {})
+    if not doc:
+        return None, "还没有句柄表（先 ask 一次）"
+    want_r, want_f = sorted(require or []), sorted(forbid or [])
+    if doc.get("require") != want_r or doc.get("forbid") != want_f:
+        return None, (f"句柄属于另一次查询（require={doc.get('require')}、"
+                      f"forbid={doc.get('forbid')}），与这次不符 —— 请重新 ask")
+    hit = (doc.get("items") or {}).get(str(n))
+    if hit is None:
+        return None, f"没有第 {n} 条（这次查询给了 {len(doc.get('items') or {})} 条）"
+    return hit, ""
+
+
+def handles(ldv_root: str | Path) -> dict:
+    """整张句柄表 —— 给 `orient` 做审计用（人看「第 3 条」到底是什么）。"""
+    return _read(handles_path(ldv_root), {})

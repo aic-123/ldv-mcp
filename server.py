@@ -400,27 +400,58 @@ def _tool_ask(a: dict) -> dict:
                                 dids=[n["did"] for n in nodes],
                                 n_answer=r.get("n_answer") or 0)
     # ★ 读正文（2026-10-24 并进 ask：读内容是查询的一个参数，不是新工具）
-    bodies = None
-    if a.get("with_body"):
-        bodies = _bodies(app, sorted(r.get("answer_ids") or []),
-                         max(1, int(a.get("limit") or 5)),
-                         max(1, int(a.get("max_chars") or 2000)))
-    return {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
-            "session": sess_info,
-            "bodies": bodies,
-            "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
-            "derived_used": derived_used,
-            "derived_note": ("本次用到的维度里，这些是 **agent 派生的**"
-                             "（不是材料里写的）—— 当线索用，别当事实"
-                             if derived_used else ""),
-            "lens": ({"id": spec.get("id"), "generated_by": spec.get("generated_by"),
-                      "corpus_fingerprint": spec.get("corpus_fingerprint")}
-                     if spec else None),
-            "n_answer": r.get("n_answer"), "n_branches": r.get("n_branches"),
-            "answer_ids": r.get("answer_ids"), "ordered_by": r.get("ordered_by"),
-            "provenance": _provenance(app, r.get("answer_ids") or []),
-            "nodes": nodes,
-            "usage_enabled": app._usage_dir is not None and in_store}
+    # ★★ 默认只交**正文 + 句柄**，id 与结构留在本地（用户 2026-10-24 定：
+    #    「只是减少重复，记录依旧保存在 ldv 之中，agent 拿到这些也没用」）。
+    #    ⇒ 默认**不给** answer_ids / nodes / must / mustnot / coverage / precision。
+    #    要看结构（调试、判断「该不该换个问法」）显式 `structure=true`。
+    limit = max(1, int(a.get("limit") or 5))
+    max_chars = max(1, int(a.get("max_chars") or 2000))
+    with_body = a.get("with_body", True)          # 正文是主产物 ⇒ 默认给
+    ids_sorted = sorted(r.get("answer_ids") or [])
+    items: list[dict] = []
+    meta: list[dict] = []
+    for i, nid in enumerate(ids_sorted[:limit]):
+        node = app.nodes[nid]
+        f = node.fields or {}
+        body = (node.body or "").strip()
+        title = str(f.get("title", "") or "")
+        items.append({"n": i + 1, "title": title,
+                      "text": body[:max_chars] if with_body else "",
+                      "source": f.get("source", ""),
+                      "filled_by": str(f.get("filled_by", "") or ""),
+                      # ★ 节点的 front matter（**除了 id 与 title**）：
+                      #   不给它，agent 读不出 project 这类自定义字段，
+                      #   也就没法把「按项目分组」翻成一个可查的维度。
+                      "fields": {k: v for k, v in f.items()
+                                 if k not in ("id", "title")},
+                      "truncated": bool(with_body and len(body) > max_chars)})
+        meta.append({"id": nid, "title": title})
+    if nodes_dir is not None and meta:
+        # 句柄表：本地记「第 n 条是哪一条」，agent 只看到 n
+        SESS.save_handles(nodes_dir.parent, meta, qfp=app._last_qfp,
+                          require=req, forbid=forb)
+    out = {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
+           "session": sess_info,
+           "n_answer": r.get("n_answer"),
+           "items": items,
+           "note": ("id 与结构留在本地：动作说「第 n 条」（drill/undo 的 n）即可；"
+                    "要看分支与谓词用 structure=true"),
+           "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
+           "derived_used": derived_used,
+           "derived_note": ("本次用到的维度里，这些是 **agent 派生的**"
+                            "（不是材料里写的）—— 当线索用，别当事实"
+                            if derived_used else ""),
+           "provenance": _provenance(app, r.get("answer_ids") or []),
+           "usage_enabled": app._usage_dir is not None and in_store}
+    if a.get("structure"):
+        out.update({"nodes": nodes, "answer_ids": ids_sorted,
+                    "n_branches": r.get("n_branches"),
+                    "ordered_by": r.get("ordered_by"),
+                    "lens": ({"id": spec.get("id"),
+                              "generated_by": spec.get("generated_by"),
+                              "corpus_fingerprint": spec.get("corpus_fingerprint")}
+                             if spec else None)})
+    return out
 
 
 def _tool_remember(a: dict) -> dict:
@@ -466,11 +497,34 @@ def _tool_drill(a: dict) -> dict:
     app, in_store = _app(corpus, sid)
     req = list(a.get("require") or [])
     forb = list(a.get("forbid") or [])
+    plugin = str(a.get("plugin") or "keyset")
+    V.check_plugin(plugin)
     chk = V.check_keys(app.all_keys, req, forb)
     if not chk["ok"]:
         return {"ok": False, "out_of_structure": True, **chk}
     did = a.get("did", "")
+    # ⚠️ 顺序很重要：`_last_shown` 属于**这一次的 App**，只有 query 之后才有内容。
+    #   第一版在 query 之前解析句柄 ⇒ 候选恒空 ⇒ 一直报「第 n 条不在这几支里」。
     r = app.query({"require": req, "forbid": forb})
+    # ★ 句柄（2026-10-24）：agent 说「第 n 条有用」，id 由本地表换回来。
+    #   语义上还更对：**有用的是这一条，不是这一支**。
+    if not did and a.get("n") is not None:
+        nodes_dir, _ = _corpus_dir(corpus)
+        if nodes_dir is None:
+            return {"ok": False, "why": "句柄只在 store 里的语料上可用"}
+        hit, why = SESS.resolve_handle(nodes_dir.parent, a["n"],
+                                       require=req, forbid=forb)
+        if hit is None:
+            return {"ok": False, "why": why}
+        # 找**含这一条的最深一支**，且必须是这次摆出来的那几支
+        k0 = app.ensure(plugin)
+        shown = set(app._last_shown or [])
+        cands = [d for d in k0.all_directions()
+                 if d.did in shown and hit["id"] in k0.members_of(d)]
+        if not cands:
+            return {"ok": False,
+                    "why": f"第 {a['n']} 条不在这几支里（也许这次查询没摆它）"}
+        did = max(cands, key=lambda d: d.rank).did
     d = app.drill(did, req, forb)
     # ★ 会话缓冲里把对应曝光标成 promoted（真实动作，与内核两段通道同构）
     promoted = False
@@ -486,42 +540,6 @@ def _tool_drill(a: dict) -> dict:
             "recorded": d.get("recorded"), "record_note": d.get("record_note"),
             "parent": d.get("parent"), "children": d.get("children"),
             "usage_enabled": app._usage_dir is not None and in_store}
-
-
-def _bodies(app, ids: list[str], limit: int, max_chars: int) -> dict:
-    """答案项的**标题与正文**（有界，截断必报）—— `ask(with_body=true)` 用它。
-
-    ★ 2026-10-24 用户定：不单开 `read` 工具，并进 `ask` 的一个选项 ——
-      「调用按 ldv 已有的方式」，读正文是**查询的一个参数**，不是新工具。
-    ★ 要看**某一支**的正文，不需要 `did`：每支的结果里本来就带 `must` / `mustnot`，
-      拿它再问一次就是那一支的成员 —— 所以并进去**不丢能力**。
-    ⚠️ 顺序按 id 排序（答案集是集合，没有「原有顺序」可言）；截断必报。
-    """
-    shown = ids[:limit]
-    items = []
-    for nid in shown:
-        node = app.nodes[nid]
-        f = node.fields or {}
-        body = (node.body or "").strip()
-        items.append({"id": nid, "title": str(f.get("title", "") or ""),
-                      "filled_by": str(f.get("filled_by", "") or ""),
-                      "evidence_status": str(f.get("evidence_status", "") or ""),
-                      "scope": str(f.get("scope", "") or ""),
-                      "source": f.get("source", ""),
-                      # ★ 节点的 front matter 全字段（树自己的数据）——
-                      #   不给它，agent 读不出 `project: alpha` 这类自定义字段，
-                      #   也就没法把「按项目分组」翻成一个可查的维度。
-                      "fields": {k: v for k, v in f.items() if k != "title"},
-                      "body": body[:max_chars],
-                      "truncated": len(body) > max_chars,
-                      "body_chars": len(body)})
-    n_cut = sum(1 for x in items if x["truncated"])
-    left = len(ids) - len(items)
-    return {"items": items, "n_matched": len(ids), "n_returned": len(items),
-            "truncated_items": n_cut,
-            "note": (f"共 {len(ids)} 项，返回前 {len(items)} 项"
-                     + (f"；其中 {n_cut} 项正文截到 {max_chars} 字" if n_cut else "")
-                     + (f"；**还有 {left} 项没返回**，调 limit 或缩小查询" if left else ""))}
 
 
 def _tool_derive(a: dict) -> dict:
@@ -554,6 +572,18 @@ def _tool_derive(a: dict) -> dict:
                          "（原材料 / 模型推断，必填）")
 
     app, _ = _app(corpus)
+    # ★ 键可以是 id，也可以是**句柄**（"1"/"2"…）—— agent 手里只有句柄。
+    #   句柄查不到就当成 id 原样用（id 也可能是纯数字，别乱猜）。
+    nodes_dir, _ = _corpus_dir(corpus)
+    if nodes_dir is not None:
+        fixed: dict = {}
+        for k, v in values.items():
+            ks = str(k)
+            hit = None
+            if ks.isdigit():
+                hit, _why = SESS.resolve_handle(nodes_dir.parent, ks)
+            fixed[hit["id"] if hit else ks] = v
+        values = fixed
     unknown = sorted(set(str(k) for k in values) - set(app.nodes))
     if unknown:
         raise S.SpecError(f"这些 id 不在语料里：{unknown[:5]}"
@@ -616,8 +646,20 @@ def _tool_undo(a: dict) -> dict:
     corpus = a.get("corpus", "")
     app, in_store = _app(corpus)
     iid = str(a.get("id") or "").strip()
+    req = list(a.get("require") or [])
+    forb = list(a.get("forbid") or [])
+    # ★ 句柄：agent 说「第 n 条」，id 从本地表换回来（2026-10-24）
+    if not iid and a.get("n") is not None:
+        nodes_dir, _ = _corpus_dir(corpus)
+        if nodes_dir is None:
+            raise ValueError("句柄只在 store 里的语料上可用")
+        hit, why = SESS.resolve_handle(nodes_dir.parent, a["n"],
+                                       require=req, forbid=forb)
+        if hit is None:
+            raise S.SpecError(why)
+        iid = hit["id"]
     if not iid:
-        raise ValueError("缺 id —— 要问「删了谁会怎样」")
+        raise ValueError("缺 id 或 n —— 要问「删了谁会怎样」")
     if iid not in app.nodes:
         raise S.SpecError(f"语料里没有这一项：{iid}")
     plugin = str(a.get("plugin") or "keyset")
@@ -733,6 +775,8 @@ TOOLS = [
                                     "description": "临时覆盖透镜里的方向函数"},
                          "session": {"type": "string",
                                      "description": "会话名（调用方声明，默认 default）"},
+                         "structure": {"type": "boolean",
+                                        "description": "连分支与谓词一起返回（默认不给：agent 用不上）"},
                          "with_body": {"type": "boolean",
                                        "description": "连正文一起返回（读内容是查询的一个选项，"
                                                       "不是单独的工具）"},
@@ -760,7 +804,9 @@ TOOLS = [
                          "did": {"type": "string"},
                          "require": {"type": "array", "items": {"type": "string"}},
                          "forbid": {"type": "array", "items": {"type": "string"}},
-                         "actor": {"type": "string"}, "session": {"type": "string"}},
+                         "actor": {"type": "string"}, "session": {"type": "string"},
+                         "n": {"type": "integer",
+                               "description": "句柄：第 n 条有用（不必给 did）"}},
                      "required": ["did", "require"]}},
     {"name": "derive",
      "description": "agent 敲定一个**派生维度**（词汇表里没有的轴，它自己建）—— "
@@ -787,6 +833,8 @@ TOOLS = [
                      "properties": {
                          "corpus": {"type": "string"},
                          "id": {"type": "string", "description": "要删来看后果的项"},
+                         "n": {"type": "integer",
+                               "description": "句柄：删第 n 条（与 id 二选一）"},
                          "require": {"type": "array", "items": {"type": "string"}},
                          "forbid": {"type": "array", "items": {"type": "string"}},
                          "plugin": {"type": "string"}},

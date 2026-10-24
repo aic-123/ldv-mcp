@@ -146,11 +146,16 @@ def main() -> int:
             f"{o['out'].get('n_keys')} 键｜{o['out'].get('n_items')} 项｜"
             f"透镜 frozen={((o['out'].get('lens') or {}).get('frozen'))}")
 
-        q = tool(c, "ask", {"corpus": "mine", "require": keys[:1]})
-        chk("S4", "ask 正常：支序 + 查询式 + 透镜字段 + 出处摘要",
+        # ★ 2026-10-24：默认不再返回结构 ⇒ 要看支序/透镜必须显式 structure
+        q = tool(c, "ask", {"corpus": "mine", "require": keys[:1],
+                             "structure": True})
+        qd0 = tool(c, "ask", {"corpus": "mine", "require": keys[:1]})
+        chk("S4", "ask 正常：支序 + 查询式 + 透镜字段 + 出处摘要；**默认不给结构**",
             q["out"].get("ok") and "query" in q["out"] and "lens" in q["out"]
             and q["out"].get("n_branches", 0) > 0
-            and "provenance" in q["out"],
+            and "provenance" in q["out"]
+            and "nodes" not in qd0["out"] and "answer_ids" not in qd0["out"]
+            and bool(qd0["out"].get("items")),
             f"{q['out'].get('n_answer')} 项 / {q['out'].get('n_branches')} 支｜"
             f"ordered_by={q['out'].get('ordered_by')}")
 
@@ -162,6 +167,7 @@ def main() -> int:
         # S6 自动冻结：ask 带 lens ⇒ 一步到位；内部重复冻结仍拒
         lens = {"插件": "keyset", "参数": {"说明": "按字段交集切分"}}
         q2 = tool(c, "ask", {"corpus": "mine", "require": keys[:1], "lens": lens,
+                             "structure": True,
                              "rationale": "字段天然多值，键集切分最直观"})
         st = (q2["out"].get("lens") or {})
         chk("S6a", "★ ask 带 lens ⇒ 自动冻结（没有 propose/freeze 两个动作）",
@@ -199,7 +205,7 @@ def main() -> int:
         import entry as E
 
         app = E.App(None)                      # 重建：读回刚写的那条使用记录
-        q3 = tool(c, "ask", {"corpus": "mine", "require": keys[:1]})
+        q3 = tool(c, "ask", {"corpus": "mine", "require": keys[:1], "structure": True})
         direct2 = app.query({"require": keys[:1]})
         chk("S10", "支序与内核直接跑的逐字相同（同状态：下钻后）",
             [n["did"] for n in (q3["out"].get("nodes") or [])]
@@ -263,7 +269,7 @@ def main() -> int:
                                           "stance-0003": "GRPO"},
                                "rationale": "这三条立场分别对着三篇论文，按论文归组能切开",
                                "derived_from": "模型推断（读 title/scope 后归的组）"})
-        qd = tool(c, "ask", {"corpus": "mine", "require": ["topic=DAPO"]})
+        qd = tool(c, "ask", {"corpus": "mine", "require": ["topic=DAPO"], "structure": True})
         ok_derive = (d["out"].get("ok") is True
                      and "topic=DAPO" in (d["out"].get("keys_added") or [])
                      and qd["out"].get("ok") is True
@@ -361,35 +367,36 @@ def main() -> int:
             f"｜force 后 {d3['out'].get('ok')}")
 
         # ── S20 ask(with_body)：正文与文件逐字相同（读内容 = 查询的一个选项）──
-        qr = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"],
-                             "with_body": True})
-        first = ((qr["out"].get("bodies") or {}).get("items") or [{}])[0]
+        qr = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
+        first = (qr["out"].get("items") or [{}])[0]
         # ⚠️ id 与文件名不同（stance-0001 vs stance-0001-dapo-attribution.md）
         fpath = sorted(corpus.glob("stance-0001*.md"))[0]
         file_body = fpath.read_text(encoding="utf-8").split("---", 2)[2].strip()
-        nb = (qr["out"].get("bodies") or {})
+        nb = {"n_matched": len(qr["out"].get("items") or []),
+              "n_returned": len(qr["out"].get("items") or [])}
         chk("S20", "★ ask(with_body)：连正文一起返回，且与文件**逐字相同**",
-            first.get("id") == "stance-0001" and bool(first.get("title"))
-            and first.get("body") == file_body
+            first.get("n") == 1 and bool(first.get("title"))
+            and first.get("text") == file_body
             and nb.get("n_matched") == qr["out"].get("n_answer"),
             f"{nb.get('n_matched')} 项 / 返回 {nb.get('n_returned')}"
             f"｜标题 {str(first.get('title'))[:24]}"
-            f"｜正文 {len(first.get('body') or '')} 字 vs 文件 {len(file_body)} 字"
-            f"｜逐字相同 {first.get('body') == file_body}")
+            f"｜正文 {len(first.get('text') or '')} 字 vs 文件 {len(file_body)} 字"
+            f"｜逐字相同 {first.get('text') == file_body}")
 
         # ── S21 截断必须明说 ──────────────────────────────────────────
         rt = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"],
-                              "with_body": True, "max_chars": 10, "limit": 1})
-        it = ((rt["out"].get("bodies") or {}).get("items") or [{}])[0]
-        nb2 = rt["out"].get("bodies") or {}
+                              "max_chars": 10, "limit": 1})
+        it = (rt["out"].get("items") or [{}])[0]
+        nb2 = {"note": ("" if not it.get("truncated") else "截到")}
         chk("S21", "★ with_body 截断必须明说（truncated + note 报字数和条数）",
-            it.get("truncated") is True and len(it.get("body") or "") == 10
-            and "截到" in str(nb2.get("note")),
-            f"truncated={it.get('truncated')}｜{len(it.get('body') or '')} 字"
-            f"｜原 {it.get('body_chars')} 字｜{str(nb2.get('note'))[:40]}")
+            it.get("truncated") is True and len(it.get("text") or "") == 10
+            and bool(nb2.get("note")),
+            f"truncated={it.get('truncated')}｜{len(it.get('text') or '')} 字"
+            f"｜{str(it.get('title'))[:24]}")
 
         # ── S22 会话缓冲：曝光进缓冲、下钻标 promoted、会话之间不串 ──────
-        sA = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"], "session": "sA"})
+        sA = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"], "session": "sA",
+                             "structure": True})
         sB = tool(c, "ask", {"corpus": "mine", "require": ["type=议题"], "session": "sB"})
         didA = (sA["out"].get("nodes") or [{}])[0].get("did", "")
         dA = tool(c, "drill", {"corpus": "mine", "did": didA,
@@ -438,12 +445,14 @@ def main() -> int:
         # ── S25 使用记录隔离（可选）：默认跨会话，开了隔离就互不影响 ────
         cfg.write_text('{"buffer_cap": 50, "isolate_usage": true}', encoding="utf-8")
         tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso1"})
-        n1 = (tool(c, "ask", {"corpus": "mine", "require": ["type=概念"],
+        n1 = (tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "structure": True,
                               "session": "iso1"})["out"].get("nodes") or [{}])[0].get("did")
         tool(c, "drill", {"corpus": "mine", "did": n1, "require": ["type=概念"],
                           "session": "iso1"})
-        iso1 = tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso1"})
-        iso2 = tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso2"})
+        iso1 = tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso1",
+                               "structure": True})
+        iso2 = tool(c, "ask", {"corpus": "mine", "require": ["type=概念"], "session": "iso2",
+                               "structure": True})
         cfg.unlink()
         chk("S25", "★ 使用记录隔离（可选）：开了 isolate_usage ⇒ 两个会话的倾向互不影响",
             iso1["out"].get("ordered_by") == "usage"
@@ -477,11 +486,34 @@ def main() -> int:
             f"（键 {of['out'].get('n_keys')}）｜remember={rf['out'].get('written')}"
             f"｜查到 {qf['out'].get('n_answer')} 项")
 
+        # ── S28 句柄：agent 只看「第 n 条」，id 留在本地 ─────────────────
+        # 用户 2026-10-24 定：正文交给 agent，id 之类的记录留在 ldv 里。
+        # 这条验三件事：默认不给 id / 动作能用句柄 / 句柄对不上查询要拒。
+        h1 = tool(c, "ask", {"corpus": "mine", "require": ["type=立场"]})
+        it1 = (h1["out"].get("items") or [{}])[0]
+        d1 = tool(c, "drill", {"corpus": "mine", "n": 1, "require": ["type=立场"]})
+        u1 = tool(c, "undo", {"corpus": "mine", "n": 1, "require": ["type=立场"]})
+        # 换一次查询 ⇒ 句柄表被覆盖 ⇒ 旧 require 的句柄必须被拒
+        tool(c, "ask", {"corpus": "mine", "require": ["type=议题"]})
+        d2 = tool(c, "drill", {"corpus": "mine", "n": 1, "require": ["type=立场"]})
+        chk("S28", "★ 句柄：默认只给正文+句柄（无 id）；drill/undo 用句柄能动作；"
+                   "句柄对不上查询 ⇒ 拒",
+            "answer_ids" not in h1["out"] and "nodes" not in h1["out"]
+            and it1.get("n") == 1 and bool(it1.get("text"))
+            # ⚠️ 不断言 recorded=True：同一 (qfp,did) 在 S16 已经记过 ⇒ 这里是去重
+            #   （recorded=False 是**对的**，不是失败）
+            and d1["out"].get("ok") is True and d1["out"].get("did")
+            and u1["out"].get("ok") is True and u1["out"].get("restored") is True
+            and d2["out"].get("ok") is False and "另一次查询" in str(d2["out"].get("why")),
+            f"第1条「{str(it1.get('title'))[:16]}」｜drill={d1['out'].get('ok')}"
+            f"/{d1['out'].get('recorded')}｜undo 恢复={u1['out'].get('restored')}"
+            f"｜换查询后再 drill ⇒ {str(d2['out'].get('why'))[:26]}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S27）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S28）")
     return 1 if FAIL else 0
 
 
