@@ -1,0 +1,144 @@
+
+═══ 第 1 轮 ═══
+
+── 真实轨迹：空库 → … → 收尾对账 ──
+  [过] F01 空库 orient 能起来（基石 1 项，不报错）
+        n_items=1｜keys=['filled_by', 'id', 'title', 'type', 'type=基石']
+  [过] F02 空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）
+        items=1｜n_answer=1
+  [过] F03 写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project
+        n_items=4｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'title', 'type', 'type=例外', 'type=判断点', 'type=基石', 'type=立场']
+  [过] F04 全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）
+        全库=4｜立场=1｜有 answer_ids=False
+  [过] F05 drill(n=2) 能用句柄动作（不必知道 did）
+        did=D5｜记=True｜note=已记录（下钻 = 有用）；这批还剩 3 支待看
+  [过] F06 derive 建维度 ⇒ 立刻能查（project=alpha ⇒ 2 项）
+        derive=True｜alpha=2｜派生标记=['project=alpha']
+  [过] F07 undo 只算不改：报「会丢 n1」，材料一个字节没动
+        lost=['n1']｜untouched=True｜事后仍 4 项
+  [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
+        写入=True｜from_cache=True
+  [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
+        有 cache_note=True｜from_cache=None
+  [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
+        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
+  [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
+        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
+  [过] F12 收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）
+        n_items=4｜recent=5 条
+
+── 边缘矩阵（26 条）──
+  [过] E01 未知键 ⇒ 报「超出结构」并给相近建议（不静默返 0）
+        out_of_structure=True｜suggest=['不存在的键=x']
+  [过] E02 已知键零命中 ⇒ ok + 0 项 + 说明（不是错）
+        n=0｜note=这一格是空的 —— 要么材料里真没有，要么**这个维度不存在
+  [过] E03 limit=0 ⇒ 至少给 1 条（不崩、不空转）
+        items=3
+  [过] E04 limit=99999 ⇒ 全给（3 项）
+        items=3
+  [过] E05 max_chars=0 ⇒ 正文空但**不报** truncated（没截，是没要）
+        text 长度=[0, 0, 0]
+  [过] E06 max_chars=1 ⇒ 只给 1 字且 truncated=True
+        truncated=[True, True, True]
+  [过] E07 句柄越界 ⇒ 说清「顺序不记了」（不是报错崩）
+        {"ok": false, "why": "顺序不记了 —— 缓冲只记到第 3 条（第 999 条超出了）"}
+  [过] E08 跨查询用旧句柄 ⇒ 拒（句柄属于另一次查询）
+        {"ok": false, "why": "句柄属于另一次查询（require=['type=立场']、forbid=[]），与这次不符 —
+  [过] E09 不存在的 did ⇒ ok=False（不崩）
+        {"ok": false, "error": "没有这个节点 'D9999'：'D9999'"}
+  [过] E10 verdict=bogus ⇒ 拒并列出合法值
+        {"ok": false, "error": "verdict 只认 good / wrong，给的是 'bogus'"
+  [过] E11 verdict=wrong + agent ⇒ 拒（判错只能外部授予）
+        {"ok": false, "error": "判错（verdict=wrong）只能外部授予：actor='agent
+  [过] E12 undo 不存在的 id ⇒ 拒（不崩、不假装成功）
+        {"_raw": "语料里没有这一项：nope"}
+  [过] E13 undo 句柄越界 ⇒ 拒
+        {"_raw": "顺序不记了 —— 缓冲只记到第 3 条（第 999 条超出了）"}
+  [过] E14 derive 空 values ⇒ 拒（不建一个空维度）
+        {"_raw": "ValueError: 缺 name 或 values（{id: 值}）"}
+  [过] E15 derive 编造 id ⇒ 当场拒
+        {"_raw": "这些 id 不在语料里：['不存在-1']"}
+  [过] E16 derive 同名重建（不给 force）⇒ 拒（不许悄悄换轴）
+        拒=True｜提到 force=True
+  [过] E17 同 id 再 remember ⇒ 不覆写（报已存在）
+        {"ok": false, "written": false, "why": "已有一条 id=n1 的记忆 —— 只追
+  [过] E18 空正文合法（空值合法是产品立场），能写能查
+        {"ok": true, "written": true, "path": "C:\\Users\\19253\\App
+  [过] E19 5000 字正文能写；查时 max_chars=100 截断并报 truncated
+        写入=True
+  [过] E20 中文/全角正文原样返回（不转义、不截断丢字）
+        首条=DAPO 的问题出在损失聚合与裁剪上界：toke
+  [过] E21 forbid 生效：排除 type=例外 ⇒ 答案里没有 n3
+        n_answer=4
+  [过] E22 max_branches=1 ⇒ 1 支 + branches_hidden>0
+        支=1｜hidden=4
+  [过] E23 两个语料互不可见（edge 的 n1 不在 flow 里）
+        flow n_answer=4
+  [过] E24 不存在的语料 ⇒ 拒并说清（不建一个空库）
+        {"_raw": "ValueError: 语料 '没有这个' 不在产品 store 下，也不是一个目录（试过 C:\\
+  [过] E25 reject_below 传了但**没有负事件** ⇒ 一条都不跳
+        skipped=[]
+  [过] E26 元查询（空 require）给全部，且 n_branches == 支数
+        n_answer=5｜shown=5／total=5
+
+═══ 第 2 轮 ═══
+
+── 真实轨迹：空库 → … → 收尾对账 ──
+  [过] F01 空库 orient 能起来（基石 1 项，不报错）
+        n_items=1｜keys=['filled_by', 'id', 'title', 'type', 'type=基石']
+  [过] F02 空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）
+        items=1｜n_answer=1
+  [过] F03 写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project
+        n_items=4｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'title', 'type', 'type=例外', 'type=判断点', 'type=基石', 'type=立场']
+  [过] F04 全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）
+        全库=4｜立场=1｜有 answer_ids=False
+  [过] F05 drill(n=2) 能用句柄动作（不必知道 did）
+        did=D5｜记=True｜note=已记录（下钻 = 有用）；这批还剩 3 支待看
+  [过] F06 derive 建维度 ⇒ 立刻能查（project=alpha ⇒ 2 项）
+        derive=True｜alpha=2｜派生标记=['project=alpha']
+  [过] F07 undo 只算不改：报「会丢 n1」，材料一个字节没动
+        lost=['n1']｜untouched=True｜事后仍 4 项
+  [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
+        写入=True｜from_cache=True
+  [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
+        有 cache_note=True｜from_cache=None
+  [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
+        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
+  [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
+        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
+  [过] F12 收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）
+        n_items=4｜recent=5 条
+
+═══ 第 3 轮 ═══
+
+── 真实轨迹：空库 → … → 收尾对账 ──
+  [过] F01 空库 orient 能起来（基石 1 项，不报错）
+        n_items=1｜keys=['filled_by', 'id', 'title', 'type', 'type=基石']
+  [过] F02 空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）
+        items=1｜n_answer=1
+  [过] F03 写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project
+        n_items=4｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'title', 'type', 'type=例外', 'type=判断点', 'type=基石', 'type=立场']
+  [过] F04 全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）
+        全库=4｜立场=1｜有 answer_ids=False
+  [过] F05 drill(n=2) 能用句柄动作（不必知道 did）
+        did=D5｜记=True｜note=已记录（下钻 = 有用）；这批还剩 3 支待看
+  [过] F06 derive 建维度 ⇒ 立刻能查（project=alpha ⇒ 2 项）
+        derive=True｜alpha=2｜派生标记=['project=alpha']
+  [过] F07 undo 只算不改：报「会丢 n1」，材料一个字节没动
+        lost=['n1']｜untouched=True｜事后仍 4 项
+  [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
+        写入=True｜from_cache=True
+  [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
+        有 cache_note=True｜from_cache=None
+  [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
+        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
+  [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
+        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
+  [过] F12 收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）
+        n_items=4｜recent=5 条
+
+── 三轮确定性（同一轨迹、独立 store，读数必须逐字相同）──
+  [过] D01 三轮读数逐字相同 ⇒ 轨迹是确定性的（不是运气）
+        空库项数=1｜写入后项数=4｜全库=4｜立场=1｜判错后跳过=['D6']｜少=1
+
+✓ 全过（F01–F12 / E01–E26 / D01）

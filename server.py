@@ -465,7 +465,11 @@ def _tool_ask(a: dict) -> dict:
     #    ⇒ 默认**不给** answer_ids / nodes / must / mustnot / coverage / precision。
     #    要看结构（调试、判断「该不该换个问法」）显式 `structure=true`。
     limit = max(1, int(a.get("limit") or 5))
-    max_chars = max(1, int(a.get("max_chars") or 2000))
+    # ⚠️ `max_chars=0` 不能走 `or 2000` —— 0 是 falsy，会被**静默换成默认值**，
+    #   于是「我只要 0 字」变成「给我 2000 字」（真实流程探针 E05 抓到）。
+    #   显式给 0 ⇒ 正文空（没截，是没要），与「截断必报」是两件事。
+    max_chars = (max(0, int(a["max_chars"])) if a.get("max_chars") is not None
+                 else 2000)
     with_body = a.get("with_body", True)          # 正文是主产物 ⇒ 默认给
     ids_sorted = sorted(r.get("answer_ids") or [])
     items: list[dict] = []
@@ -484,7 +488,10 @@ def _tool_ask(a: dict) -> dict:
                       #   也就没法把「按项目分组」翻成一个可查的维度。
                       "fields": {k: v for k, v in f.items()
                                  if k not in ("id", "title")},
-                      "truncated": bool(with_body and len(body) > max_chars)})
+                      # ⚠️ `max_chars=0` 是「我只要 0 字」，不是「截断了」——
+                      #   没少给东西，是没要。`truncated` 只在**真截掉内容**时为真。
+                      "truncated": bool(with_body and max_chars > 0
+                                        and len(body) > max_chars)})
         meta.append({"id": nid, "title": title})
     if nodes_dir is not None and meta:
         # 句柄表：本地记「第 n 条是哪一条」，agent 只看到 n
@@ -820,7 +827,9 @@ def _tool_remember_answer(a: dict) -> dict:
         if s not in app.nodes:
             raise S.SpecError(f"来源里没有这一项：{s}")
 
-    fp = app.fingerprint()
+    # ★ 记的是**内容指纹**（与 `_cache_lookup` 同一口径）—— 用结构票据的话，
+    #   正文改了缓存不会失效（真实流程探针 F09 抓到过）。
+    fp = _content_fp(nodes_dir)
     key = _cache_key(req, forb, plugin)
     doc = {"qfp": key, "corpus_fp": fp, "plugin": plugin,
            "require": sorted(req), "forbid": sorted(forb),
@@ -838,11 +847,36 @@ def _tool_remember_answer(a: dict) -> dict:
                      "它带 filled_by: agent，**永不进「已验证」**")}
 
 
+def _content_fp(nodes_dir: Path) -> str:
+    """答案缓存的**内容指纹**：相对路径 + 字节数 + mtime（不读正文）。
+
+    ⚠️ 为什么不用 `app.fingerprint()`：那是**结构票据**（项数 / 键数 / 方向数），
+       **正文改了它不变** ⇒ 缓存会静默沿用旧答案。实测（真实流程探针 F09）：
+       改一条笔记的正文后 `from_cache` 仍是 True、`cache_note` 是 None ——
+       正是「过期缓存静默赢过新答案」这个失效模式。
+    ⚠️ 也不用 `spec_store.corpus_fingerprint`（透镜那个）：它刻意**不含正文**
+       （「正文改了但结构没改，声明仍然成立」—— 对透镜是对的）。
+       **两个用途要两个指纹**：透镜问「切分还成立吗」，缓存问「答案还是这个吗」。
+    ⚠️ mtime 会造成「touch 一下假过期」—— 对缓存这是**安全**的一侧：
+       宁可多问一次 agent，不可拿旧答案当新的。
+    """
+    import hashlib
+
+    h = hashlib.sha1()
+    for p in sorted(nodes_dir.rglob("*.md")):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        h.update(f"{p.name}|{st.st_size}|{st.st_mtime_ns};".encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
 def _cache_lookup(app, nodes_dir: Path, req, forb, plugin: str):
     """命中 ⇒ (doc, path)；没命中或过期 ⇒ (None, 原因)。"""
     if nodes_dir is None:
         return None, ""
-    fp = app.fingerprint()
+    fp = _content_fp(nodes_dir)          # ★ 内容指纹（不是结构票据）
     key = _cache_key(req, forb, plugin)
     p = _answers_dir(nodes_dir) / f"{key}.json"
     if p.is_file():

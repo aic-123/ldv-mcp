@@ -38,7 +38,12 @@ from typing import Any
 #: ★ 2026-10-22 加后四个：`我` 是自我维度（`docs/认知原型.md` §3），
 #:   其余三个是**自我语料**的字段（`ldv/tools/make_self_corpus.py` 生成）。
 #:   它们只在该字段**存在**时才产键 ⇒ 对外部语料零影响。
-ENUM_FIELDS = ("type", "evidence_status", "我", "种类", "级", "含定理")
+#: ★ 2026-10-25 加 `source.kind`（外部评审实测挖出）：**平铺写法**
+#:   （`source.kind: 论文`）时 `fields` 里是平铺键，而下面那段只认**嵌套**
+#:   （`source:\n  kind: 论文`）⇒ 同一语义两种写法，一种能按值查、一种查不到
+#:   （报「未知键」）。加进枚举表后两种写法**等价**。
+ENUM_FIELDS = ("type", "evidence_status", "我", "种类", "级", "含定理",
+               "source.kind")
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 
