@@ -108,20 +108,22 @@ def run_flow(store: Path) -> list[str]:
         # ① 空库先 orient（真人第一步：看看这有什么）
         o0 = c.tool("orient", {"corpus": "flow"})
         seen.append(f"空库项数={o0['out'].get('n_items')}")
-        chk("F01", "空库 orient 能起来（基石 1 项，不报错）",
+        chk("F01", "空库 orient 能起来（**0 项**，不报错、不写占位文件）",
             o0["out"].get("ok") is not False and o0["out"].get("n_items") is not None,
             f"n_items={o0['out'].get('n_items')}｜keys={o0['out'].get('keys')}")
 
         # ② 空库直接 ask（边缘：还没有材料）
         e0 = c.tool("ask", {"corpus": "flow", "require": []})
-        # ⚠️ 空库**不是 0 项**：基石自动放 1 项（S27 验过的设计）。
-        #    第一版按 0 项写 ⇒ 红得像是产品错，其实是我忘了基石。
-        chk("F02", "空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）",
+        # ★ 空库就是 **0 项**（2026-10-25 用户定：不再塞占位文件）。
+        #   ⚠️ 这里原先写的是「基石 1 项」—— 那个设计已经删了。
+        chk("F02", "空库 ask ⇒ 不崩、0 项、且**目录里没被写进任何文件**",
             e0["out"].get("ok") is True
-            and len(e0["out"].get("items") or []) == 1
-            and e0["out"].get("n_answer") == 1,
+            and len(e0["out"].get("items") or []) == 0
+            and e0["out"].get("n_answer") == 0
+            and not any(nodes.glob("*.md")),
             f"items={len(e0['out'].get('items') or [])}"
-            f"｜n_answer={e0['out'].get('n_answer')}")
+            f"｜n_answer={e0['out'].get('n_answer')}"
+            f"｜目录文件数={len(list(nodes.glob('*.md')))}")
 
         # ③ 写三条
         for nid, typ, proj, src, body in [
@@ -133,8 +135,8 @@ def run_flow(store: Path) -> list[str]:
                                            "source.kind": src}})
         o1 = c.tool("orient", {"corpus": "flow"})
         seen.append(f"写入后项数={o1['out'].get('n_items')}")
-        chk("F03", "写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project",
-            o1["out"].get("n_items") == 4
+        chk("F03", "写三条后 orient 看到 3 项（空库就是 0 项，没有占位文件）",
+            o1["out"].get("n_items") == 3
             and any(str(k).startswith("type=") for k in (o1["out"].get("keys") or [])),
             f"n_items={o1['out'].get('n_items')}｜keys={o1['out'].get('keys')}")
 
@@ -142,8 +144,8 @@ def run_flow(store: Path) -> list[str]:
         a1 = c.tool("ask", {"corpus": "flow", "require": []})
         a2 = c.tool("ask", {"corpus": "flow", "require": ["type=立场"]})
         seen.append(f"全库={a1['out'].get('n_answer')}｜立场={a2['out'].get('n_answer')}")
-        chk("F04", "全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）",
-            a1["out"].get("n_answer") == 4 and a2["out"].get("n_answer") == 1
+        chk("F04", "全库 3 项、type=立场 1 项，默认只给正文 + 句柄（无 id）",
+            a1["out"].get("n_answer") == 3 and a2["out"].get("n_answer") == 1
             and "answer_ids" not in a1["out"]
             and (a1["out"].get("items") or [{}])[0].get("n") == 1,
             f"全库={a1['out'].get('n_answer')}｜立场={a2['out'].get('n_answer')}"
@@ -177,7 +179,7 @@ def run_flow(store: Path) -> list[str]:
         chk("F07", "undo 只算不改：报「会丢 n1」，材料一个字节没动",
             "n1" in (u1["out"].get("answer_lost") or [])
             and u1["out"].get("untouched") is True
-            and a4["out"].get("n_answer") == 4,
+            and a4["out"].get("n_answer") == 3,
             f"lost={u1['out'].get('answer_lost')}｜untouched={u1['out'].get('untouched')}"
             f"｜事后仍 {a4['out'].get('n_answer')} 项")
 
@@ -246,8 +248,8 @@ def run_flow(store: Path) -> list[str]:
 
         # ⑫ 收尾对账：orient 说清「记得什么、查过什么」
         o2 = c.tool("orient", {"corpus": "flow"})
-        chk("F12", "收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）",
-            o2["out"].get("n_items") == 4
+        chk("F12", "收尾 orient 与写入一致（3 项，且有最近动作）",
+            o2["out"].get("n_items") == 3
             and len(o2["out"].get("recent_calls") or []) > 0,
             f"n_items={o2['out'].get('n_items')}"
             f"｜recent={len(o2['out'].get('recent_calls') or [])} 条")
@@ -424,7 +426,7 @@ def edge_cases(store: Path) -> None:
         r25 = c.tool("ask", {"corpus": "edge", "require": [], "reject_below": 0.0})
         r26 = c.tool("ask", {"corpus": "edge", "require": []})
         E("23", "两个语料互不可见（edge 的 n1 不在 flow 里）",
-          r23["out"].get("n_answer") == 4,       # flow = 3 条 + 基石
+          r23["out"].get("n_answer") == 3,       # flow = 3 条（空库不再有占位项）
           f"flow n_answer={r23['out'].get('n_answer')}")
         E("24", "不存在的语料 ⇒ 拒并说清（不建一个空库）",
           r24["out"].get("ok") is False or bool(r24.get("isError")),

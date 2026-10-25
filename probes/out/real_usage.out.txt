@@ -2,30 +2,30 @@
 ═══ 第 1 轮 ═══
 
 ── 真实轨迹：空库 → … → 收尾对账 ──
-  [过] F01 空库 orient 能起来（基石 1 项，不报错）
-        n_items=1｜keys=['filled_by', 'id', 'title', 'type', 'type=基石']
-  [过] F02 空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）
-        items=1｜n_answer=1
-  [过] F03 写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project
-        n_items=4｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'title', 'type', 'type=例外', 'type=判断点', 'type=基石', 'type=立场']
-  [过] F04 全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）
-        全库=4｜立场=1｜有 answer_ids=False
+  [过] F01 空库 orient 能起来（**0 项**，不报错、不写占位文件）
+        n_items=0｜keys=[]
+  [过] F02 空库 ask ⇒ 不崩、0 项、且**目录里没被写进任何文件**
+        items=0｜n_answer=0｜目录文件数=0
+  [过] F03 写三条后 orient 看到 3 项（空库就是 0 项，没有占位文件）
+        n_items=3｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'type', 'type=例外', 'type=判断点', 'type=立场']
+  [过] F04 全库 3 项、type=立场 1 项，默认只给正文 + 句柄（无 id）
+        全库=3｜立场=1｜有 answer_ids=False
   [过] F05 drill(n=2) 能用句柄动作（不必知道 did）
-        did=D5｜记=True｜note=已记录（下钻 = 有用）；这批还剩 3 支待看
+        did=D4｜记=True｜note=已记录（下钻 = 有用）；这批还剩 2 支待看
   [过] F06 derive 建维度 ⇒ 立刻能查（project=alpha ⇒ 2 项）
         derive=True｜alpha=2｜派生标记=['project=alpha']
   [过] F07 undo 只算不改：报「会丢 n1」，材料一个字节没动
-        lost=['n1']｜untouched=True｜事后仍 4 项
+        lost=['n1']｜untouched=True｜事后仍 3 项
   [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
         写入=True｜from_cache=True
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
-        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
+        agent 拒=True｜outcome=-1.0｜跳过=['D3']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
         keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
-  [过] F12 收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）
-        n_items=4｜recent=5 条
+  [过] F12 收尾 orient 与写入一致（3 项，且有最近动作）
+        n_items=3｜recent=5 条
 
 ── 边缘矩阵（26 条）──
   [过] E01 未知键 ⇒ 报「超出结构」并给相近建议（不静默返 0）
@@ -73,7 +73,7 @@
   [过] E22 max_branches=1 ⇒ 1 支 + branches_hidden>0
         支=1｜hidden=4
   [过] E23 两个语料互不可见（edge 的 n1 不在 flow 里）
-        flow n_answer=4
+        flow n_answer=3
   [过] E24 不存在的语料 ⇒ 拒并说清（不建一个空库）
         {"_raw": "ValueError: 语料 '没有这个' 不在产品 store 下，也不是一个目录（试过 C:\\
   [过] E25 reject_below 传了但**没有负事件** ⇒ 一条都不跳
@@ -84,61 +84,61 @@
 ═══ 第 2 轮 ═══
 
 ── 真实轨迹：空库 → … → 收尾对账 ──
-  [过] F01 空库 orient 能起来（基石 1 项，不报错）
-        n_items=1｜keys=['filled_by', 'id', 'title', 'type', 'type=基石']
-  [过] F02 空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）
-        items=1｜n_answer=1
-  [过] F03 写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project
-        n_items=4｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'title', 'type', 'type=例外', 'type=判断点', 'type=基石', 'type=立场']
-  [过] F04 全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）
-        全库=4｜立场=1｜有 answer_ids=False
+  [过] F01 空库 orient 能起来（**0 项**，不报错、不写占位文件）
+        n_items=0｜keys=[]
+  [过] F02 空库 ask ⇒ 不崩、0 项、且**目录里没被写进任何文件**
+        items=0｜n_answer=0｜目录文件数=0
+  [过] F03 写三条后 orient 看到 3 项（空库就是 0 项，没有占位文件）
+        n_items=3｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'type', 'type=例外', 'type=判断点', 'type=立场']
+  [过] F04 全库 3 项、type=立场 1 项，默认只给正文 + 句柄（无 id）
+        全库=3｜立场=1｜有 answer_ids=False
   [过] F05 drill(n=2) 能用句柄动作（不必知道 did）
-        did=D5｜记=True｜note=已记录（下钻 = 有用）；这批还剩 3 支待看
+        did=D4｜记=True｜note=已记录（下钻 = 有用）；这批还剩 2 支待看
   [过] F06 derive 建维度 ⇒ 立刻能查（project=alpha ⇒ 2 项）
         derive=True｜alpha=2｜派生标记=['project=alpha']
   [过] F07 undo 只算不改：报「会丢 n1」，材料一个字节没动
-        lost=['n1']｜untouched=True｜事后仍 4 项
+        lost=['n1']｜untouched=True｜事后仍 3 项
   [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
         写入=True｜from_cache=True
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
-        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
+        agent 拒=True｜outcome=-1.0｜跳过=['D3']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
         keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
-  [过] F12 收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）
-        n_items=4｜recent=5 条
+  [过] F12 收尾 orient 与写入一致（3 项，且有最近动作）
+        n_items=3｜recent=5 条
 
 ═══ 第 3 轮 ═══
 
 ── 真实轨迹：空库 → … → 收尾对账 ──
-  [过] F01 空库 orient 能起来（基石 1 项，不报错）
-        n_items=1｜keys=['filled_by', 'id', 'title', 'type', 'type=基石']
-  [过] F02 空库 ask ⇒ 不崩，只有基石 1 项（不假装有材料）
-        items=1｜n_answer=1
-  [过] F03 写三条后 orient 看到 4 项（3 + 基石），键表出现 type/project
-        n_items=4｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'title', 'type', 'type=例外', 'type=判断点', 'type=基石', 'type=立场']
-  [过] F04 全库 4 项（含基石）、type=立场 1 项，默认只给正文 + 句柄（无 id）
-        全库=4｜立场=1｜有 answer_ids=False
+  [过] F01 空库 orient 能起来（**0 项**，不报错、不写占位文件）
+        n_items=0｜keys=[]
+  [过] F02 空库 ask ⇒ 不崩、0 项、且**目录里没被写进任何文件**
+        items=0｜n_answer=0｜目录文件数=0
+  [过] F03 写三条后 orient 看到 3 项（空库就是 0 项，没有占位文件）
+        n_items=3｜keys=['filled_by', 'id', 'project', 'remembered_at', 'source.kind', 'source.kind=个人笔记', 'source.kind=官方文档', 'source.kind=论文', 'type', 'type=例外', 'type=判断点', 'type=立场']
+  [过] F04 全库 3 项、type=立场 1 项，默认只给正文 + 句柄（无 id）
+        全库=3｜立场=1｜有 answer_ids=False
   [过] F05 drill(n=2) 能用句柄动作（不必知道 did）
-        did=D5｜记=True｜note=已记录（下钻 = 有用）；这批还剩 3 支待看
+        did=D4｜记=True｜note=已记录（下钻 = 有用）；这批还剩 2 支待看
   [过] F06 derive 建维度 ⇒ 立刻能查（project=alpha ⇒ 2 项）
         derive=True｜alpha=2｜派生标记=['project=alpha']
   [过] F07 undo 只算不改：报「会丢 n1」，材料一个字节没动
-        lost=['n1']｜untouched=True｜事后仍 4 项
+        lost=['n1']｜untouched=True｜事后仍 3 项
   [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
         写入=True｜from_cache=True
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
-        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
+        agent 拒=True｜outcome=-1.0｜跳过=['D3']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
         keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
-  [过] F12 收尾 orient 与写入一致（4 项 = 3 + 基石，且有最近动作）
-        n_items=4｜recent=5 条
+  [过] F12 收尾 orient 与写入一致（3 项，且有最近动作）
+        n_items=3｜recent=5 条
 
 ── 三轮确定性（同一轨迹、独立 store，读数必须逐字相同）──
   [过] D01 三轮读数逐字相同 ⇒ 轨迹是确定性的（不是运气）
-        空库项数=1｜写入后项数=4｜全库=4｜立场=1｜判错后跳过=['D6']｜少=1
+        空库项数=0｜写入后项数=3｜全库=3｜立场=1｜判错后跳过=['D3']｜少=1
 
 ✓ 全过（F01–F12 / E01–E26 / D01）

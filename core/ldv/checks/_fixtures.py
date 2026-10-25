@@ -84,11 +84,15 @@ def find_corpus() -> Path | None:
         _HERE.parent.parent / "corpus" / "nodes",
     )
     for cand in pool:
-        # ⚠️ **`rglob` + 短路**（2026-10-18）：摄入侧会把节点分片到子目录，
-        #    `glob("*.md")` 在分片目录下**一个都找不到** ⇒ 判定「这不是语料」。
-        #    用 `next(rglob(...), None)` 而不是 `any(rglob(...))` —— 后者会把
-        #    10 万个文件全遍历一遍，这里只要知道「有没有」。
-        if cand.is_dir() and next(cand.rglob("*.md"), None) is not None:
+        # ★ **空目录也算找到**（2026-10-25，用户定）：新库就是 0 项 ——
+        #   它不该因为「还没往里写东西」而起不来，也不该为此在语料里塞一个
+        #   占位文件（原来靠 `_keystone.md` 绕，现在不需要了）。
+        #   ⚠️ 与「路径写错」仍**分得开**：目录不存在不会进这个分支
+        #      （`is_dir()` 是硬事实），而「存在但空」就是空库。
+        #   ⚠️ 原来这里用 `next(cand.rglob("*.md"), None) is not None` 判「有没有节点」，
+        #      是为了让**分片目录**（`nodes/<xx>/`）也算语料 —— `is_dir()` 更宽，
+        #      分片自然覆盖。
+        if cand.is_dir():
             return cand
     if env:
         raise CorpusError(

@@ -148,7 +148,7 @@ def main() -> int:
     print("=" * 80)
 
     o0 = c.tool("orient", {"corpus": "notes"})
-    print(f"\n⓪ 空库 orient ⇒ {o0.get('n_items')} 项（基石自动放的）"
+    print(f"\n⓪ 空库 orient ⇒ {o0.get('n_items')} 项（0 = 空库，不写占位文件）"
           f"｜键 {o0.get('n_keys')} 个")
 
     for i, (nid, proj, kind, _t) in enumerate(PLAN, start=1):

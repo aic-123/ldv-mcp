@@ -158,18 +158,15 @@ def _corpus_dir(name_or_path: str) -> tuple[Path | None, bool]:
                      f"（试过 {in_store}）")
 
 
-#: 空库的基石（2026-10-24 用户定）：内核把空目录当「找不到语料」——
-#: 而空目录与路径写错长得一样，所以**空库需要一个占位项才能起来**。
-#: 真开始记东西后它不参与任何查询（没有 type/键可查），可以留着也可以删。
-KEYSTONE = """---
-id: "_keystone"
-type: 基石
-title: "空库的基石（占位用，无内容）"
-filled_by: "系统"
----
-这一条没有内容。它存在只是因为内核把「空目录」当「找不到语料」，
-而空目录与路径写错长得一样 —— 空库需要一个占位项才能起来。
-"""
+#: ★ 空库**不需要占位文件**（2026-10-25 用户定）。
+#:
+#: 原来这里放一条 `_keystone.md`（内核当时把空目录当「找不到语料」）。
+#: 现在内核 `load_nodes` / `find_corpus` 都接受空语料 —— **目录存在就是空库，
+#: 目录不存在才是路径错**。所以：
+#:   · 不再往用户的语料目录里写任何占位文件；
+#:   · 空库就是 0 项，`ask` 回 `n_answer=0` / `stopped=empty`（说清「这一格是空的」）；
+#:   · 老 store 里如果已经有 `_keystone.md`，**不删**（它不参与任何查询，留着无害）——
+#:     删用户数据不是这一层该做的决定。
 
 
 def _app(corpus: str, session: str = ""):
@@ -185,13 +182,8 @@ def _app(corpus: str, session: str = ""):
     if nodes is None:
         app = E.App(None)
         return app, True
-    # ★ 空库自动放基石：否则内核报 CorpusError（空目录 = 找不到语料）。
-    #   只在**空**的时候放，之后不管它（不参与任何查询）。
-    if in_store and nodes.is_dir() and not any(nodes.glob("*.md")):
-        try:
-            L.create_exclusive(nodes / "_keystone.md", KEYSTONE)
-        except OSError:
-            pass
+    # ★ 空库直接起（2026-10-25）：不再写占位文件 —— 内核现在接受 0 项语料，
+    #   而「目录不存在」仍会报错（`find_corpus` 用 `is_dir()` 判）。
     os.environ["LDV_CORPUS"] = str(nodes)
     app = E.App(None)
     if session and in_store and SESS.config(nodes.parent)["isolate_usage"]:

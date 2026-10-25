@@ -31,7 +31,7 @@
     S24 ★ 多个 ldv：不给名字 ⇒ 列出全部（只数文件不建内核）
     S25 ★ 使用记录隔离（可选）：isolate_usage ⇒ 两个会话的倾向互不影响
     S26 ★ 等价消费者：agent 填的内容在出处里单独一桶（标记真的分得开）
-    S27 ★ 空库能起来：基石自动放 ⇒ 能直接 remember ⇒ 能查
+    S27 ★ 空库能起来：**0 项、不写占位文件** ⇒ 能直接 remember ⇒ 能查
 """
 from __future__ import annotations
 
@@ -473,19 +473,25 @@ def main() -> int:
             f"type=笔记 ⇒ {b}（remember 写的，filled_by=agent）"
             f"｜type=立场 ⇒ {b2}（语料原有的）")
 
-        # ── S27 空库能起来：基石自动放，之后能直接 remember ────────────
-        # 内核把空目录当「找不到语料」（空目录与路径写错长得一样）
-        # ⇒ 插件在空库时自动放一条基石。这条判据验「从零开始」真的可用。
-        (store / "_data" / "fresh" / "nodes").mkdir(parents=True, exist_ok=True)
+        # ── S27 空库能起来：**0 项**，不写任何占位文件，之后能直接 remember ──
+        # 2026-10-25 用户定：空库不该靠一个占位文件才能起来。
+        # 内核现在接受空语料（`load_nodes` 返回 `{}`、`find_corpus` 用 `is_dir()` 判
+        # 「目录存在」而不是「有 md」）⇒ 空库就是 0 项。
+        fresh = store / "_data" / "fresh" / "nodes"
+        fresh.mkdir(parents=True, exist_ok=True)
         of = tool(c, "orient", {"corpus": "fresh"})
+        # ★ 断言「**没写占位文件**」——这是这一条的重点，不是附带
+        no_files = not any(fresh.glob("*.md"))
         rf = tool(c, "remember", {"corpus": "fresh", "id": "first",
                                   "fields": {"type": "笔记"}, "body": "第一条。"})
         qf = tool(c, "ask", {"corpus": "fresh", "require": ["type=笔记"]})
-        chk("S27", "★ 空库能起来：基石自动放（1 项）⇒ 能直接 remember ⇒ 能查",
-            of["out"].get("n_items") == 1 and rf["out"].get("written") is True
+        chk("S27", "★ 空库能起来：0 项、**不写占位文件** ⇒ 能直接 remember ⇒ 能查",
+            of["out"].get("n_items") == 0 and no_files
+            and rf["out"].get("written") is True
             and qf["out"].get("n_answer") == 1,
             f"空库 orient {of['out'].get('n_items')} 项"
-            f"（键 {of['out'].get('n_keys')}）｜remember={rf['out'].get('written')}"
+            f"｜目录里没写文件={no_files}"
+            f"｜remember={rf['out'].get('written')}"
             f"｜查到 {qf['out'].get('n_answer')} 项")
 
         # ── S28 句柄：agent 只看「第 n 条」，id 留在本地 ─────────────────

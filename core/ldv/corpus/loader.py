@@ -291,8 +291,10 @@ def load_nodes(directory: str | Path) -> dict[str, Node]:
         if node.id in out:
             raise CorpusError(f"重复的 id：{node.id}")
         out[node.id] = node
-    if not out:
-        raise CorpusError(f"{d} 里没有 .md 节点")
+    # ★ **空语料是合法的**（2026-10-25，用户定）：新库就是 0 项 —— 它不该因为
+    #   「还没往里写东西」而起不来，也不该为此在语料里塞一个占位文件。
+    #   ⚠️ 与「路径写错」分得开：**目录不存在**上面就抛了（`is_dir()`），
+    #      这里只放过「目录在、但一个 .md 都没有」—— 那是「空库」，不是「找不到」。
     return out
 
 
