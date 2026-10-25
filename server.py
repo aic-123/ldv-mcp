@@ -59,9 +59,32 @@ from spec_store import store as S               # noqa: E402
 
 #: 产品自己的 store（可用环境变量覆盖）
 STORE = Path(os.environ.get("LDV_MCP_STORE", str(HERE / "store")))
-PROTOCOL_VERSION = "2024-11-05"
+#: ★ 协议版本要**协商**，不能写死（2026-10-25，官方 SDK 实测发现）：
+#: 原来写死 `2024-11-05`，新版客户端发 `2025-06-18` ⇒ 收到不支持的版本就**断开**
+#: （MCP 规范：client 不支持 server 回的版本时必须断开）。实测现象是
+#: 「握手时 Connection closed」，而 server 本身没崩（手工喂同一消息能正常回）。
+#:
+#: 规范的正确做法：client 发它支持的版本，**server 回 client 发来的那个**
+#: （前提是自己也支持）；都不支持时回自己最高的，让 client 决定要不要继续。
+PROTOCOL_VERSION = "2025-06-18"          # 自己支持的最高
+SUPPORTED_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_NAME = "ldv-mcp"
-SERVER_VERSION = "0.1.0"
+
+
+def _server_version() -> str:
+    """版本号**现算**（读 `core/PINNED`），不手写 —— 手写的迟早会漂。
+
+    （这条是本项目踩过的：README 里「21 份文档」漂成 23、`SERVER_VERSION`
+    还停在 `0.1.0` 而产品已经到 v0.1.44。）
+    """
+    try:
+        for line in (Path(__file__).resolve().parent / "core" / "PINNED").read_text(
+                encoding="utf-8").splitlines():
+            if line.strip().startswith("版本"):
+                return line.split()[-1].lstrip("v")
+    except OSError:
+        pass
+    return "0"
 
 #: 调用日志（agent 的审计轨迹）—— 一行一次工具调用，**只追加**。
 #:
@@ -1236,9 +1259,13 @@ def _handle(msg: dict) -> None:
     mid = msg.get("id")
     method = msg.get("method", "")
     if method == "initialize":
-        _result(mid, {"protocolVersion": PROTOCOL_VERSION,
+        # ★ 版本**协商**：回 client 发来的那个（自己也支持的话），否则回自己最高的
+        asked = str((msg.get("params") or {}).get("protocolVersion") or "")
+        ver = asked if asked in SUPPORTED_VERSIONS else PROTOCOL_VERSION
+        _result(mid, {"protocolVersion": ver,
                       "capabilities": {"tools": {}},
-                      "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}})
+                      "serverInfo": {"name": SERVER_NAME,
+                                     "version": _server_version()}})
         return
     if method == "ping":
         _result(mid, {})
@@ -1267,11 +1294,15 @@ def _handle(msg: dict) -> None:
                        "n_branches": out.get("n_branches"),
                        "qfp": out.get("qfp"), "did": out.get("did"),
                        "isError": not out.get("ok", True)})
+            # ★ 不再返回 `structuredContent`（2026-10-25，官方 SDK 实测后删）：
+            #   按 2025-06-18 规范，返回 structuredContent 的 tool **应当**声明
+            #   `outputSchema`，否则严格客户端会按 schema 校验失败。而 `content[0].text`
+            #   里已经是完整 JSON —— 客户端照样能解析，所以这个字段是**纯风险无收益**。
+            #   （要给 12 个工具各写一份 outputSchema，维护成本 > 收益。）
             _result(mid, {"content": [{"type": "text",
                                        "text": json.dumps(out, ensure_ascii=False,
                                                           indent=1)}],
-                          "isError": not out.get("ok", True),
-                          "structuredContent": out})
+                          "isError": not out.get("ok", True)})
         except (V.CheckError, S.SpecError) as e:
             # 判据红了 ⇒ 明确报错，不包成「成功但空」
             _result(mid, {"content": [{"type": "text", "text": str(e)}],

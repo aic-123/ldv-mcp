@@ -140,3 +140,26 @@
 > **这份清单里的每一条都有判据守着；不在清单里的，没有。**
 > 你的职责是**翻译**（自然语言 → 键）和**判断**（该不该记、该不该判错），
 > 不是实现结构 —— 规则怎么切是系统内部的事，你不用知道，也不该被要求知道。
+
+---
+
+## 7 协议合规（M1–M8，官方 SDK 验过）
+
+这一节不是「承诺」，是**你能连得上**的证据 —— 用官方 MCP Python SDK 真握手跑出来的
+（`probes/mcp_conformance.py`，留档 `probes/out/mcp_conformance.out.txt`）。
+
+| 编号 | 保证 | 你该怎么用 |
+|---|---|---|
+| `M1` | 握手合规，**版本协商**（回你发来的那个） | 别假设协议版本；读 `protocolVersion` |
+| `M2` | `tools/list` 8 个工具全部可解析 | 工具面是 **8 个**（四动作 + 四能力） |
+| `M3` | 8 个 `inputSchema` 全部合法（`required ⊆ properties`） | 按 schema 传参，别凭记忆 |
+| `M4` | `content[0].text` 是完整 JSON | 解析 text，别找 `structuredContent`（**故意不返回**） |
+| `M5` | 未知工具 ⇒ JSON-RPC 错误（-32602） | 工具名拼错会报错，不会静默成功 |
+| `M6` | 参数导致业务错 ⇒ `isError` + 说明 | 读 `isError`，别把错误当结果 |
+| `M7` | 出错后**连接仍可用** | 不必重连 |
+| `M8` | 不返回 `structuredContent`（无 `outputSchema` 时返回它反而违规） | 只看 `content[0].text` |
+
+⚠️ **两个坑（实测踩到，不是推演）**：
+1. **协议版本必须协商**：写死回旧版本 ⇒ 新客户端直接断开（现象是「握手时 Connection closed」，
+   而 server 自己没崩）。现在回客户端发来的版本。
+2. **`structuredContent` 要配 `outputSchema`**：没配就返回，严格客户端会校验失败 ⇒ 已删。

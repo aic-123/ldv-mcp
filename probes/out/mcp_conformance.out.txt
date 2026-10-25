@@ -1,0 +1,26 @@
+  [过] M1 官方 SDK 握手成功，协议字段合规
+        protocolVersion=2025-06-18｜server=ldv-mcp 0.1.44｜capabilities=experimental=None logging=None prompts=None resources=None tools=ToolsCapability(list_changed=None) completions=None extensions=None tasks=None
+  [过] M2 tools/list 返回 8 个工具，全部可解析
+        orient｜ask｜remember｜drill｜derive｜remember_answer｜undo｜next
+  [过] M3 每个 inputSchema 都是合法 JSON Schema（required ⊆ properties）
+        8 个全部合法
+  [过] M4 tools/call 正常返回（content 里是 JSON 文本）
+        isError=False｜前 60 字={
+ "ok": true,
+ "corpus": "mine",
+ "n_items": 1,
+ "n_keys": 
+  [过] M5 未知工具 ⇒ 明确报错（SDK 层异常也算）
+        MCPError: 没有这个工具 '没有这个工具'（有 ['ask', 'derive', 'drill', 'next', 'orient
+  [过] M6 参数导致业务错 ⇒ isError + 说明，连接不崩
+        isError=True｜{
+ "ok": false,
+ "out_of_structure": true,
+ "unknown": [
+  "
+  [过] M7 出错之后连接仍可用（同一会话继续调）
+        isError=False
+  [过] M8 不返回 structuredContent（无 outputSchema 时返回它反而违规）
+        structuredContent=无｜带 outputSchema 的 tool：0 个
+
+✓ 全过（M1–M8）

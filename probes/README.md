@@ -14,7 +14,8 @@
 | `repeat_cost.py` | 重复任务 / 历史检索的成本形状 | **tiktoken** |
 | `eval_rigor.py` | 位置扫描 / 多针 / 重复取均值（对齐 RAGAS 检索侧） | **tiktoken** |
 | `metamorphic.py` | 八条蜕变关系（加/删/改/换序后答案该怎么变） | 无 |
-| `real_usage.py` | **真实轨迹**（F01–F12）+ **边缘矩阵**（E01–E26）+ 三轮确定性（D01） | 无 |
+| `real_usage.py` | **真实轨迹**（F01–F14）+ **边缘矩阵**（E01–E26）+ 三轮确定性（D01） | 无 |
+| `mcp_conformance.py` | **协议合规**（M1–M8）：用**官方 MCP SDK** 真握手 / tools-list 解析 / 调用与错误 | 官方 SDK（`pip install mcp`） |
 | `real_model.py` | **真模型**：位置扫描 / 长度扫描 / 编造率 | **DeepSeek key**（仓库外） |
 | `real_scale.py` | **长上下文 × 三种给法**（全塞 / 窄查询 / 宽 limit）对照 | **DeepSeek key**（仓库外） |
 

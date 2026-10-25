@@ -10,6 +10,27 @@
 
 ---
 
+## 协议合规（**官方 SDK 验过**，2026-10-25）
+
+不是「我说它合规」—— 用**官方 MCP Python SDK** 真连了一次（`probes/mcp_conformance.py`，
+留档 `probes/out/mcp_conformance.out.txt`）：
+
+| 检查 | 读数 |
+|---|---|
+| **握手** | `protocolVersion=2025-06-18`（**协商**：回客户端发来的版本）、`serverInfo=ldv-mcp 0.1.44`（版本从 `core/PINNED` **现算**） |
+| **tools/list** | 8 个工具全部可被 SDK 解析；8 个 `inputSchema` 全部合法（`required ⊆ properties`） |
+| **tools/call** | `content[0].text` 是完整 JSON；业务错走 `isError`；**出错后连接仍可用** |
+| **未知工具** | 走 JSON-RPC 错误（-32602），不是静默成功 |
+| **structuredContent** | **不返回** —— 没有 `outputSchema` 时返回它反而违规（2025-06-18） |
+
+⚠️ 两个坑（都是实测踩到的，不是推演出来的）：
+
+1. **协议版本必须协商**：原来写死回 `2024-11-05`，新版客户端发 `2025-06-18` ⇒
+   收到不支持的版本就**断开**。现象是「握手时 Connection closed」，而 server 自己没崩
+   （手工喂同一条消息能正常回）。
+2. **`structuredContent` 要配 `outputSchema`**：没配就返回，严格客户端会按 schema 校验失败。
+   删掉它 —— `content[0].text` 里已经是完整 JSON，客户端照样能解析。
+
 ## 三十秒起跑
 
 1. **装**：把上面的配置加进你的 MCP 客户端（`LDV_MCP_STORE` 指向一个空目录即可）
