@@ -787,13 +787,16 @@ def main() -> int:
             and q_self2["out"].get("n_answer") == 2,
             f"第二版={sa2['out'].get('node_id')}"
             f"｜我=是 现在 {q_self2['out'].get('n_answer')} 项")
-        # 手工删掉当前那条（MCP 没有删节点的工具 —— undo 是「只算不改」）
-        (own / (str(nid) + ".md")).unlink(missing_ok=True)
+        # 手工删掉**缓存当前指向的**那条（MCP 没有删节点的工具 —— undo 是「只算不改」）。
+        # ⚠️ 必须是第二版：`S40b` 之后缓存指向最新的那次回答（`-2`），
+        #    删第一版不会让缓存失效 —— 删错对象会让这条判据「看着红其实是测错了」。
+        cur_nid = sa2["out"].get("node_id") or nid
+        (own / (str(cur_nid) + ".md")).unlink(missing_ok=True)
         hit2 = tool(c, "ask", {"corpus": "own", "require": ["type=事实"]})
         chk("S38d", "★ 删掉那条记录 ⇒ 缓存**作废并说明**（记忆删了，答案不能还在）",
             not (hit2["out"].get("cached_answer") or {}).get("from_cache")
             and "已被删除" in str(hit2["out"].get("cache_note")),
-            f"note={str(hit2['out'].get('cache_note'))[:50]}")
+            f"删的是 {cur_nid}｜note={str(hit2['out'].get('cache_note'))[:46]}")
 
         # ── S39：**推理闭环**（失配 → 改结构 → 自洽，2026-10-25）──────────
         # 定位文档说「它是结构主义那一支的认知模型：推理 = 失配驱动的结构修复」。
@@ -841,11 +844,70 @@ def main() -> int:
             dis.get("结构坏了") == 0 and dis.get("合计") == dis.get("表达力缺口"),
             f"失配={ {k: v for k, v in dis.items() if k != 'note'} }")
 
+        # ── S40：真实使用时报的五条（2026-10-25，全部复现后修掉）─────────
+        # 来源：用户在 DeepSeekHarness 里跑 `_probe/probe*.py` 报出来的。
+        # 共同特征 —— **都是「静默」**：静默忽略参数、静默报成功、静默少给东西。
+        real = store / "_data" / "real" / "nodes"
+        real.mkdir(parents=True)
+        for i in range(3):
+            (real / f"r{i}.md").write_text(
+                f'---\nid: "r{i}"\ntype: 立场\n---\n\n第 {i} 条。\n',
+                encoding="utf-8", newline="\n")
+
+        # ① 换 lens 不 force ⇒ 原来**静默用旧插件**（调用方以为换了切分方式）
+        tool(c, "ask", {"corpus": "real", "require": ["type=立场"],
+                        "lens": {"插件": "keyset"}, "rationale": "先冻一个"})
+        lc = tool(c, "ask", {"corpus": "real", "require": ["type=立场"],
+                             "lens": {"插件": "reach"}, "rationale": "想换"})
+        chk("S40a", "★ 换透镜不 force ⇒ **拒**（不许静默用旧的那份）",
+            lc["out"].get("ok") is False
+            and lc["out"].get("lens_conflict") is True
+            and "force" in str(lc["out"].get("error")),
+            f"ok={lc['out'].get('ok')}｜error={str(lc['out'].get('error'))[:60]}")
+
+        # ② 同键再答 ⇒ 原来报 written=true 但缓存**还是旧答案**（静默失败）
+        tool(c, "remember_answer", {"corpus": "real", "require": ["type=立场"],
+                                    "answer": "FIRST"})
+        w2 = tool(c, "remember_answer", {"corpus": "real",
+                                         "require": ["type=立场"],
+                                         "answer": "SECOND"})
+        hit3 = tool(c, "ask", {"corpus": "real", "require": ["type=立场"]})
+        chk("S40b", "★ 同键再答 ⇒ 缓存**换成新答案**，并报 replaced=true",
+            (hit3["out"].get("cached_answer") or {}).get("answer") == "SECOND"
+            and w2["out"].get("replaced") is True,
+            f"命中={(hit3['out'].get('cached_answer') or {}).get('answer')}"
+            f"｜replaced={w2['out'].get('replaced')}")
+
+        # ③ undo 传 did（方向 id）⇒ 原来报「语料里没有这一项：D2」（误导）
+        sd = tool(c, "ask", {"corpus": "real", "require": [], "structure": True})
+        did2 = (sd["out"].get("nodes") or [{}])[0].get("did")
+        u2 = tool(c, "undo", {"corpus": "real", "did": did2, "require": []})
+        u2txt = json.dumps(u2["out"], ensure_ascii=False)
+        chk("S40c", "★ undo 传 did ⇒ 说清「方向 id 不是项 id」（不报「没有这一项」）",
+            "方向 id" in u2txt and "项 id" in u2txt,
+            u2txt[:90])
+
+        # ④ next 的清单 ⇒ 原来只列两档，而 S17 的 docstring 说三个桶都列
+        n3 = tool(c, "next", {"corpus": "real", "require": []})
+        keys3 = set((n3["out"].get("清单") or {}).keys())
+        chk("S40d", "★ next 的清单列**三档**（必须/可延后/可忽略）",
+            {"必须", "可延后", "可忽略"} <= keys3, f"清单键={sorted(keys3)}")
+
+        # ⑤ limit 截断 ⇒ 原来只在 items 为空时才报（3 条只给 1 条静默通过）
+        lm = tool(c, "ask", {"corpus": "real", "require": ["type=立场"],
+                             "limit": 1})
+        chk("S40e", "★ limit 截断 ⇒ `items_truncated` + 说清共几条",
+            lm["out"].get("items_truncated") is True
+            and bool(lm["out"].get("items_note")),
+            f"items={len(lm['out'].get('items') or [])}"
+            f"｜n_answer={lm['out'].get('n_answer')}"
+            f"｜note={str(lm['out'].get('items_note'))[:50]}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S39）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S40）")
     return 1 if FAIL else 0
 
 

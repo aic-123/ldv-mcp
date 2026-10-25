@@ -119,6 +119,36 @@ def _tail(path, n: int = 5) -> list[str]:
     return lines[-n:]
 
 
+def _atomic_write(path: Path, data: str, retries: int = 20) -> None:
+    """原子覆写：写临时文件 + `os.replace`，**带重试**。
+
+    ⚠️ **Windows 上 `os.replace` 会因读者持着目标句柄被拒**（`PermissionError
+    [WinError 5]`）—— 实测写者 400 次有 350 次被拒（`DEAD-ENDS §1.1` 的裁定，
+    证据 `outputs/_probe_win_replace_vs_read.py`）。所以**必须配重试**，
+    「一次 replace 就完事」在 Windows 上是错的。
+    ⚠️ 只有**缓存**用它（覆写是缓存的正常语义）；记忆节点仍走 `create_exclusive`
+    （只追加不覆写 —— 覆写记忆就是改写历史）。
+    """
+    tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+    with io.open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(data)
+        f.flush()
+    import time
+
+    for i in range(retries):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if i == retries - 1:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
+            time.sleep(0.02 * (i + 1))
+
+
 def _log_call(tool: str, args: dict, actor: str, summary: dict) -> None:
     """一次工具调用一行。写不进去**不炸**（日志是审计件，不是判据）——
     但也不静默：返回写没写成，调用方可以报。"""
@@ -426,6 +456,21 @@ def _tool_ask(a: dict) -> dict:
                                  generated_by=_actor(a), corpus_dir=nodes_dir)
                 S.freeze(_spec_dir(corpus), cand["candidate_id"], corpus_dir=nodes_dir)
         spec = S.load(_spec_dir(corpus))
+    # ★ 已有冻结透镜、又传了**不同**的 lens、还没 force ⇒ **必须报错**
+    #   （2026-10-25，真实使用发现的：原来直接忽略，静默用旧插件 ——
+    #    调用方以为换了切分方式，其实答案来自旧的那份。静默改语义 = 最坏的一种。）
+    if spec is not None and lens and not a.get("force"):
+        cur = spec.get("spec") or {}
+        diff = {k: v for k, v in lens.items() if cur.get(k) != v}
+        if diff:
+            return {"ok": False, "lens_conflict": True,
+                    "frozen_lens_id": spec.get("id"),
+                    "diff": diff,
+                    "error": (f"已有冻结透镜（id={spec.get('id')}），这次传的 {sorted(diff)} "
+                              "与它不同 —— 要换请显式 force=true"
+                              "（换透镜会让切分变，新旧答案不可比）"),
+                    "next_step": ["force=true 换透镜（旧的作废）",
+                                  "或去掉 lens 参数，用现有的那份"]}
 
     plugin = ""
     if spec:
@@ -541,10 +586,16 @@ def _tool_ask(a: dict) -> dict:
                             if derived_used else ""),
            "provenance": _provenance(app, r.get("answer_ids") or []),
            "usage_enabled": app._usage_dir is not None and in_store}
-    if not items and r.get("n_answer"):
-        out["items_note"] = (f"答案有 {r.get('n_answer')} 条，这里只给了 {limit} 条"
+    # ★ `limit` 截断必须**明说**（2026-10-25，真实使用发现的）。
+    #   原来条件是 `not items and n_answer` ⇒ **只有 items 为空时才报**，
+    #   于是「3 条答案只给 1 条」静默通过 —— 调用方以为只有 1 条。
+    #   与 `max_chars` 的 `truncated` 是同一条纪律：**少给东西必须说**。
+    n_ans = int(r.get("n_answer") or 0)
+    if len(items) < n_ans:
+        out["items_note"] = (f"答案有 {n_ans} 条，这里只给了 {len(items)} 条"
                              "（limit 卡住了）—— 要更多就放大 limit，"
                              "**别拿没给的当不存在**")
+        out["items_truncated"] = True
     elif not items:
         out["items_note"] = ("这一格是空的 —— 要么材料里真没有，要么**这个维度不存在**；"
                              "后者交给 agent 补（derive 一个维度 / 换问法），不许猜")
@@ -866,8 +917,16 @@ def _tool_remember_answer(a: dict) -> dict:
                             "语料指纹一变，这条整体作废"),
            "created": datetime.now().isoformat(timespec="seconds")}
     p = _answers_dir(nodes_dir) / f"{key}.json"
-    L.create_exclusive(p, json.dumps(doc, ensure_ascii=False, indent=1))
-    return {"ok": True, "written": True, "key": key, "path": str(p),
+    # ★ 同键再答 ⇒ **覆写**缓存（2026-10-25，真实使用发现的 bug）。
+    #   原来用 `create_exclusive` ⇒ 文件已存在就写不进去，而返回值写死 `written: true`
+    #   ⇒ **报成功但缓存还是旧答案**（静默失败，最坏的一种）。
+    #   缓存**本来就该覆写**：「同一个问题的答案」以最新一次为准；
+    #   历史留在节点里（`ans-<key>-2` 那套），不在缓存里。
+    #   ⚠️ 用带重试的原子写（Windows 上 os.replace 会因读者持句柄被拒）。
+    replaced = p.is_file()
+    _atomic_write(p, json.dumps(doc, ensure_ascii=False, indent=1))
+    return {"ok": True, "written": True, "replaced": replaced,
+            "key": key, "path": str(p),
             "node_id": node_id,
             "corpus_fingerprint": fp,
             "note": ("答案已编进树：语料指纹不变时，同类问题先命中这里，"
@@ -1000,8 +1059,19 @@ def _tool_undo(a: dict) -> dict:
             raise S.SpecError(why)
         iid = hit["id"]
     if not iid:
+        # ★ `did` 是**方向 id**（D2），不是项 id —— 真实使用里有人这么传，
+        #   而原来的报错「缺 id 或 n」让人以为系统坏了（2026-10-25 修）。
+        if a.get("did"):
+            raise S.SpecError(
+                f"`did` 是**方向 id**（{a['did']}），不是项 id —— undo 要的是"
+                "「删掉哪一项」，用 `id`（项 id）或 `n`（上一次查询里的句柄）")
         raise ValueError("缺 id 或 n —— 要问「删了谁会怎样」")
     if iid not in app.nodes:
+        # 传了个方向 id 当项 id：也说清（同一个坑的第二种表现）
+        if iid in {d.did for d in app.ensure(str(a.get("plugin") or "keyset")).all_directions()}:
+            raise S.SpecError(
+                f"`{iid}` 是**方向 id**，不是项 id —— 用 `id`（项）或 `n`（句柄）；"
+                "要看「删掉这一项会怎样」，先用 ask 拿到它")
         raise S.SpecError(f"语料里没有这一项：{iid}")
     plugin = str(a.get("plugin") or "keyset")
     V.check_plugin(plugin)
@@ -1083,7 +1153,10 @@ def _tool_next(a: dict) -> dict:
                  "必须": len(g.get("必须", [])), "可延后": len(g.get("可延后", [])),
                  "可忽略": len(g.get("可忽略", []))}
     limit = int(a.get("limit") or 5)
-    out["清单"] = {tier: g.get(tier, [])[:limit] for tier in ("必须", "可延后")}
+    # ★ 三个桶都列（S17 的 docstring 一直这么说，实现漏了「可忽略」——
+    #   真实使用发现的，2026-10-25 补上）。调用方自己决定显不显示。
+    out["清单"] = {tier: g.get(tier, [])[:limit]
+                    for tier in ("必须", "可延后", "可忽略")}
     # ★ 失配汇总（2026-10-25）：把「**结构自己**哪里不平」收成一个视图，
     #   不必让调用方知道三档各叫什么才知道该看哪。
     #   ⚠️ 三类失配里**只有两类**在这里 —— 「需求与结构失配」（问的键不在词汇表）
