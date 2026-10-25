@@ -795,11 +795,57 @@ def main() -> int:
             and "已被删除" in str(hit2["out"].get("cache_note")),
             f"note={str(hit2['out'].get('cache_note'))[:50]}")
 
+        # ── S39：**推理闭环**（失配 → 改结构 → 自洽，2026-10-25）──────────
+        # 定位文档说「它是结构主义那一支的认知模型：推理 = 失配驱动的结构修复」。
+        # 这句话在 2026-10-25 之前**没有判据守着** —— 三种失配各有判据、改结构有账，
+        # 但「改完失配真的没了吗」没人守。这一条补的就是**闭环的终点**。
+        #   ⚠️ ⑤ 是**反向对照**：不 derive 再问必须仍然报超出结构 ——
+        #      否则 ②④ 读的是同一个来源，判据是空转。
+        loop = store / "_data" / "loop" / "nodes"
+        loop.mkdir(parents=True)
+        for i in range(3):
+            (loop / f"l{i}.md").write_text(
+                f'---\nid: "l{i}"\ntype: 实验\n---\n\n第 {i} 条。\n',
+                encoding="utf-8", newline="\n")
+        need = ["project=alpha"]
+        miss = tool(c, "ask", {"corpus": "loop", "require": need})
+        again = tool(c, "ask", {"corpus": "loop", "require": need})
+        chk("S39a", "★ 推理闭环①：需求与结构失配 ⇒ 报「超出结构」+ 说清能自己补",
+            miss["out"].get("ok") is False
+            and miss["out"].get("out_of_structure") is True
+            and miss["out"].get("can_agent_fill") is True,
+            f"out_of_structure={miss['out'].get('out_of_structure')}"
+            f"｜can_agent_fill={miss['out'].get('can_agent_fill')}")
+        chk("S39b", "★ 推理闭环⑤（**反向对照**）：不改结构再问 ⇒ 必须**仍然**超出结构",
+            again["out"].get("out_of_structure") is True,
+            f"第二次 out_of_structure={again['out'].get('out_of_structure')}")
+        dv2 = tool(c, "derive", {"corpus": "loop", "name": "project",
+                                 "values": {"l0": "alpha", "l1": "alpha",
+                                            "l2": "beta"},
+                                 "rationale": "按项目分",
+                                 "derived_from": "材料字段 project"})
+        chk("S39c", "★ 推理闭环②：改结构（derive）⇒ 结构多了这个维度",
+            dv2["out"].get("ok") is True
+            and bool(dv2["out"].get("keys_added")),
+            f"keys_added={dv2['out'].get('keys_added')}")
+        fixed = tool(c, "ask", {"corpus": "loop", "require": need})
+        chk("S39d", "★ 推理闭环③：需求满足（同一个 ask 不再超出结构，且答得出）",
+            fixed["out"].get("ok") is True
+            and fixed["out"].get("out_of_structure") is not True
+            and (fixed["out"].get("n_answer") or 0) > 0,
+            f"ok={fixed['out'].get('ok')}｜n_answer={fixed['out'].get('n_answer')}"
+            f"｜out_of_structure={fixed['out'].get('out_of_structure')}")
+        nx2 = tool(c, "next", {"corpus": "loop", "require": []})
+        dis = nx2["out"].get("失配") or {}
+        chk("S39e", "★ 推理闭环④：**改完自洽** —— 结构没被这次修复弄出矛盾",
+            dis.get("结构坏了") == 0 and dis.get("合计") == dis.get("表达力缺口"),
+            f"失配={ {k: v for k, v in dis.items() if k != 'note'} }")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S38）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S39）")
     return 1 if FAIL else 0
 
 

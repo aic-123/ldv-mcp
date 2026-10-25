@@ -20,12 +20,14 @@
         写入=True｜from_cache=True
   [过] F13 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）
         node_id=ans-05add24c6ad6385b｜我=是 1 项｜type=回答 1 项
+  [过] F14 推理闭环：失配 → 反向对照（仍失配）→ derive → 满足 → 结构自洽
+        失配=True｜反向仍失配=True｜derive=True｜满足=2 项｜结构坏了=0
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
         agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
-        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
+        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '失配', '必须']
   [过] F12 收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）
         n_items=4｜recent=5 条
 
@@ -104,12 +106,14 @@
         写入=True｜from_cache=True
   [过] F13 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）
         node_id=ans-05add24c6ad6385b｜我=是 1 项｜type=回答 1 项
+  [过] F14 推理闭环：失配 → 反向对照（仍失配）→ derive → 满足 → 结构自洽
+        失配=True｜反向仍失配=True｜derive=True｜满足=2 项｜结构坏了=0
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
         agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
-        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
+        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '失配', '必须']
   [过] F12 收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）
         n_items=4｜recent=5 条
 
@@ -134,12 +138,14 @@
         写入=True｜from_cache=True
   [过] F13 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）
         node_id=ans-05add24c6ad6385b｜我=是 1 项｜type=回答 1 项
+  [过] F14 推理闭环：失配 → 反向对照（仍失配）→ derive → 满足 → 结构自洽
+        失配=True｜反向仍失配=True｜derive=True｜满足=2 项｜结构坏了=0
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
         agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
-        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
+        keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '失配', '必须']
   [过] F12 收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）
         n_items=4｜recent=5 条
 
@@ -147,4 +153,4 @@
   [过] D01 三轮读数逐字相同 ⇒ 轨迹是确定性的（不是运气）
         空库项数=0｜写入后项数=3｜全库=3｜立场=1｜判错后跳过=['D6']｜少=1
 
-✓ 全过（F01–F13 / E01–E26 / D01）
+✓ 全过（F01–F14 / E01–E26 / D01）

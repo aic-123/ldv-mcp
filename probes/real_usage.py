@@ -207,6 +207,31 @@ def run_flow(store: Path) -> list[str]:
             f"｜我=是 {mine['out'].get('n_answer')} 项"
             f"｜type=回答 {mine_ans['out'].get('n_answer')} 项")
 
+        # ⑧-c 推理闭环（2026-10-25）：失配 → 改结构 → 自洽。
+        #   这是「结构主义那一支的认知模型」的核心机制（断言 §S6、判据 S39）。
+        #   轨迹里也要走一遍 —— 不然它只活在 smoke 里。
+        miss2 = c.tool("ask", {"corpus": "flow", "require": ["status=open"]})
+        again2 = c.tool("ask", {"corpus": "flow", "require": ["status=open"]})
+        dv2 = c.tool("derive", {"corpus": "flow", "name": "status",
+                                "values": {"n1": "open", "n2": "open", "n3": "closed"},
+                                "rationale": "按处理状态分",
+                                "derived_from": "材料字段 status"})
+        fixed2 = c.tool("ask", {"corpus": "flow", "require": ["status=open"]})
+        nx2 = c.tool("next", {"corpus": "flow", "require": []})
+        dis2 = nx2["out"].get("失配") or {}
+        chk("F14", "推理闭环：失配 → 反向对照（仍失配）→ derive → 满足 → 结构自洽",
+            miss2["out"].get("out_of_structure") is True
+            and again2["out"].get("out_of_structure") is True
+            and dv2["out"].get("ok") is True
+            and fixed2["out"].get("ok") is True
+            and (fixed2["out"].get("n_answer") or 0) > 0
+            and dis2.get("结构坏了") == 0,
+            f"失配={miss2['out'].get('out_of_structure')}"
+            f"｜反向仍失配={again2['out'].get('out_of_structure')}"
+            f"｜derive={dv2['out'].get('ok')}"
+            f"｜满足={fixed2['out'].get('n_answer')} 项"
+            f"｜结构坏了={dis2.get('结构坏了')}")
+
         # ⑨ 语料变 ⇒ 缓存明说过期（不是静默沿用）
         (nodes / "n1.md").write_text(
             (nodes / "n1.md").read_text(encoding="utf-8") + "\n补一句：实测复现。\n",
@@ -477,7 +502,7 @@ def main() -> int:
     chk("D01", "三轮读数逐字相同 ⇒ 轨迹是确定性的（不是运气）", same,
         "｜".join(runs[0]) + ("" if same else f"｜第2轮={runs[1]}｜第3轮={runs[2]}"))
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（F01–F13 / E01–E26 / D01）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（F01–F14 / E01–E26 / D01）")
     return 1 if FAIL else 0
 
 
