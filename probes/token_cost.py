@@ -75,10 +75,9 @@ class MCP:
         return json.loads(self.p.stdout.readline())
 
     def tool(self, name, args):
-        # ★ 探针验的是**结构**（支序 / 答案集 / 计数）⇒ 统一要 structure=True。
-        #   2026-10-24 起 ask 默认只交正文 + 句柄（id 留在本地）。
-        if name == "ask":
-            args = {"structure": True, **args}
+        # ⚠️ 2026-10-25（外部评审 B1）：**不再自动注入 structure** ——
+        #   本探针要量的正是「三种给法各花多少」，注入会让三列退化成同一列。
+        #   要结构（answer_ids 等）的调用方自己显式传。
         r = self.call("tools/call", {"name": name, "arguments": args})
         res = r.get("result") or {}
         return "".join(i.get("text", "") for i in (res.get("content") or []))
@@ -130,7 +129,7 @@ def run_scale(c: MCP, corpus: str, notes, label: str) -> list[tuple[str, int, in
     # ★ 先 derive 一个 project 维度 —— 自定义字段只进「字段名」键，
     #   不 derive 的话 project=alpha 会**报错**（那不是省，是没答）。
     rd = c.tool("ask", {"corpus": corpus, "require": [], "with_body": True,
-                        "limit": len(notes) + 10})
+                        "structure": True, "limit": len(notes) + 10})
     try:
         doc0 = json.loads(rd)
     except ValueError:
@@ -172,29 +171,43 @@ def run_scale(c: MCP, corpus: str, notes, label: str) -> list[tuple[str, int, in
         ("元：整个库", [], 40),
     ]
     rows = []
+    covered: set[str] = set()          # 去重口径：四问一共覆盖哪些节点
     for q, req, limit in QS:
-        res = c.tool("ask", {"corpus": corpus, "require": req,
-                             "with_body": True, "limit": limit})
+        # ★ 三种给法各问一遍（外部评审 B1：默认瘦身路径一直没有读数）——
+        #   默认（正文 + 句柄）｜无正文（with_body=false）｜含结构（structure=true）
+        #   ⚠️ 不设「with_body=true」列：它**就是默认**（正文是主产物，默认给）。
+        #      旧探针传 with_body=true 又靠 tool() 注入 structure ⇒ 量的一直是
+        #      「最全」那一列，瘦身省了多少从没被测到。
+        d_def = c.tool("ask", {"corpus": corpus, "require": req})
+        d_nb = c.tool("ask", {"corpus": corpus, "require": req,
+                              "with_body": False})
+        d_str = c.tool("ask", {"corpus": corpus, "require": req,
+                               "structure": True})
         try:
-            doc = json.loads(res)
+            doc = json.loads(d_str)
         except ValueError:
-            doc = {"_raw": res}
+            doc = {"_raw": d_str}
         n_ans = doc.get("n_answer") or 0
-        with_tok = tok(res) + tok(q)
+        ids = list(doc.get("answer_ids") or [])
+        covered |= set(ids)
+        t_def = tok(d_def) + tok(q)
+        t_nb = tok(d_nb) + tok(q)
+        t_str = tok(d_str) + tok(q)
         wo_tok = wo_base + tok(q)
-        rows.append((f"{q}", with_tok, wo_tok, n_ans))
+        rows.append((f"{q}", t_def, t_nb, t_str, wo_tok, n_ans))
     print(f"\n=== {label}（{len(notes)} 条笔记，窗口 {WINDOW_NOTES} 条 = "
           f"{len(window)} 条在窗内）===")
     print(f"   窗口常驻 {wo_base} tokens（每问都要付一遍）")
     print(f"   一次性成本（读全库 + derive project）：{one_time} tokens")
-    print(f"   {'问题':<18}{'WITH':>7}{'WITHOUT':>9}{'答案项':>7}   结论")
-    for q, w, wo, n in rows:
+    print(f"   {'问题':<18}{'默认':>7}{'无正文':>7}{'含结构':>7}"
+          f"{'WITHOUT':>9}{'答案项':>7}   结论")
+    for q, d, nb, st, wo, n in rows:
         if n == 0:
             verdict = "**没答到**（0 项）"
         else:
-            verdict = ("插件省" if w < wo else "插件贵") + f"（{w / max(1, wo):.2f}×）"
-        print(f"   {q:<18}{w:>7}{wo:>9}{n:>7}   {verdict}")
-    return rows
+            verdict = ("插件省" if d < wo else "插件贵") + f"（{d / max(1, wo):.2f}×）"
+        print(f"   {q:<18}{d:>7}{nb:>7}{st:>7}{wo:>9}{n:>7}   {verdict}")
+    return rows, len(covered)
 
 
 def main() -> int:
@@ -208,18 +221,29 @@ def main() -> int:
             nodes = store / "_data" / corpus / "nodes"
             nodes.mkdir(parents=True, exist_ok=True)
             write_corpus(nodes, notes)
-            rows = run_scale(c, corpus, notes, label)
-            # 累计：N 个问题下的总成本
-            tot_w = sum(r[1] for r in rows)
-            tot_wo = sum(r[2] for r in rows)
-            n_items = sum(r[3] for r in rows)
+            rows, n_dedup = run_scale(c, corpus, notes, label)
+            # 累计：N 个问题下的总成本（三种给法各一列）
+            tot_def = sum(r[1] for r in rows)
+            tot_nb = sum(r[2] for r in rows)
+            tot_str = sum(r[3] for r in rows)
+            tot_wo = sum(r[4] for r in rows)
+            n_items = sum(r[5] for r in rows)          # 原口径：四问项数**累加**
             window_items = min(WINDOW_NOTES, len(notes))
-            print(f"   ⇒ {len(rows)} 问累计：WITH {tot_w} vs WITHOUT {tot_wo}"
-                  f"（{tot_w / max(1, tot_wo):.2f}×）")
-            # ★ 可比的单位不是「每问」，是「**每条答案**」——
-            #   WITHOUT 便宜是因为它只能看见窗口里的 12 条，答不全。
-            print(f"   ⇒ 每条答案的 token：WITH {tot_w / max(1, n_items):.0f}"
-                  f"（{n_items} 项）vs WITHOUT {tot_wo / max(1, window_items):.0f}"
+            print(f"   ⇒ {len(rows)} 问累计：默认 {tot_def}｜无正文 {tot_nb}"
+                  f"｜含结构 {tot_str}｜WITHOUT {tot_wo}")
+            print(f"     含结构比默认贵 {tot_str / max(1, tot_def):.2f}×"
+                  f"｜默认比 WITHOUT 贵 {tot_def / max(1, tot_wo):.2f}×")
+            # ★ 每条答案（外部评审 A3：原口径分母在**重复计数**）——
+            #   四问的答案互为子集，累加项数会超过语料条数（14 条的库印出 23 项）。
+            #   两个口径都印：累加口径是历史读数（可比过去），去重口径是**正确**的。
+            print(f"   ⇒ 每条答案（累加口径，历史写法）：默认"
+                  f" {tot_def / max(1, n_items):.0f}（{n_items} 项）"
+                  f" vs WITHOUT {tot_wo / max(1, window_items):.0f}"
+                  f"（只能看见 {window_items} 条）")
+            assert n_dedup <= len(notes), f"去重覆盖 {n_dedup} > 语料 {len(notes)}"
+            print(f"   ⇒ 每条答案（**去重口径**）：默认"
+                  f" {tot_def / max(1, n_dedup):.0f}（{n_dedup} 项，语料共 "
+                  f"{len(notes)} 条） vs WITHOUT {tot_wo / max(1, window_items):.0f}"
                   f"（只能看见 {window_items} 条）")
 
         # ── 写入成本：一条笔记经插件写 vs 直接说在对话里 ─────────────
@@ -233,10 +257,14 @@ def main() -> int:
         print(f"   ⇒ 写入几乎等价（插件多的是字段和 id，不是正文）")
 
         print(f"\n=== 结论 ===")
-        print("   插件省不省 token **没有统一答案**：")
-        print("     · 答案集 ≪ 窗口  ⇒ 插件省（只取回需要的那几项）")
-        print("     · 答案集 ≈ 整个库 ⇒ 插件贵（取回的比窗口还大）")
-        print("   语料越大、问得越窄，插件越划算；问「整个库有什么」时它必输。")
+        print("   ① 每问比：默认路径仍比 WITHOUT 贵（1.8×～5×）—— WITHOUT 只带窗口")
+        print("      12 条、**答不全**，拿它当「便宜」是拿答不了当便宜。")
+        print("   ② 每条答案比（**去重口径**，外部评审 A3 修正后的分母）：")
+        print("      小规模贵（库比窗口还小，取回的诚意不如窗内常驻）｜")
+        print("      大规模省（库远大于窗口，答案集仍远小于全库）。")
+        print("   ③ 瘦身的账（外部评审 B1 要的读数）：默认 vs 含结构 =")
+        print("      小规模省 47%、大规模省 32% —— 默认不给结构，这一半是实打实的。")
+        print("   ④ 无正文（with_body=false）只再省 8%～15%：正文才是主产物。")
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)

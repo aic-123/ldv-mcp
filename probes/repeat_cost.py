@@ -71,6 +71,8 @@ class MCP:
     def tool(self, name, args):
         # ★ 探针验的是**结构**（支序 / 答案集 / 计数）⇒ 统一要 structure=True。
         #   2026-10-24 起 ask 默认只交正文 + 句柄（id 留在本地）。
+        #   ⚠️ 2026-10-25 注：本探针的 WITH 读数是**含结构列**（它要读 answer_ids），
+        #   与 token_cost 的「默认列」不同口径 —— 比绝对值前先对齐列。
         if name == "ask":
             args = {"structure": True, **args}
         r = self.call("tools/call", {"name": name, "arguments": args})

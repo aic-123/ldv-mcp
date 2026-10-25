@@ -60,11 +60,11 @@ def chk(tag: str, what: str, good: bool, detail: str = "") -> None:
 class MCP:
     """一个最小 MCP 客户端：写一行、读一行。"""
 
-    def __init__(self, env_extra: dict | None = None):
+    def __init__(self, env_extra: dict | None = None, server_path=None):
         env = dict(os.environ)
         env["PYTHONIOENCODING"] = "utf-8"
         env.update(env_extra or {})
-        self.p = subprocess.Popen([PY, str(HERE / "server.py")],
+        self.p = subprocess.Popen([PY, str(server_path or HERE / "server.py")],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                   env=env, cwd=str(HERE))
@@ -598,11 +598,99 @@ def main() -> int:
             f"｜filled_by={ca.get('filled_by')}"
             f"｜语料变后：{str(stale['out'].get('cache_note'))[:30]}")
 
+        # ── S33：支序闸门**会开火**（外部评审 A1，2026-10-25）──────────
+        # 旧写法两个入参是同一个列表推导 ⇒ 恒真 ⇒ 闸门结构上不可能开火。
+        # 新写法两个来源（内核序 vs 曝光序）。这里做**反向对照**：
+        # 把曝光序强行反转的 server 副本必须抛 CheckError；原版不抛。
+        src = io.open(HERE / "server.py", encoding="utf-8").read()
+        line = next(l for l in src.splitlines()
+                    if "V.check_order(raw_dids, exposed)" in l)
+        a1, a2 = [x.strip() for x in
+                  line.split("check_order(", 1)[1].split(")", 1)[0].split(",", 1)]
+        chk("S33a", "支序闸门：两个入参来自不同来源（防退回「自已比自已」）",
+            a1 != a2, f"实参 {a1} vs {a2}")
+        rev = src.replace('exposed = [n["did"] for n in nodes]',
+                          'exposed = list(reversed([n["did"] for n in nodes]))', 1)
+        assert rev != src, "S33 反转锚点没匹配上 —— 服务器那段变了，判据要跟着改"
+        # ⚠️ require 要用**缓存里没有的组合**：S32 刚记了 `type=立场` 单键，
+        #   用同一个 require 会命中缓存**提前返回**，expose 根本不走 ⇒ 反转无效
+        #   （第一版就这样，红得莫名其妙）。双键组合缓存里没有。
+        rev_req = keys[:2]
+        rp = HERE / "_srv_reverse.py"
+        io.open(rp, "w", encoding="utf-8", newline="\n").write(rev)
+        try:
+            corpus2 = store / "_data" / "rev" / "nodes"
+            corpus2.mkdir(parents=True)
+            for f in sorted(builtin.glob("*.md")):
+                shutil.copy2(f, corpus2 / f.name)
+            c2 = MCP({"LDV_MCP_STORE": str(store)}, server_path=rp)
+            rv = tool(c2, "ask", {"corpus": "rev", "require": rev_req,
+                                  "structure": True, "session": "x"})
+            # ⚠️ CheckError 的返回形状是 `{"_raw": 原文}`（isError 路径），
+            #   没有 `ok` 键 —— 断言要认这两种形状，别只认 ok=False。
+            ok_bad = ("支序" in json.dumps(rv["out"], ensure_ascii=False)
+                      and (rv["out"].get("ok") is False
+                           or "_raw" in rv["out"]))
+            c2.close()
+        finally:
+            rp.unlink(missing_ok=True)
+        chk("S33b", "支序闸门：曝光序被反转 ⇒ ask 当场抛 CheckError（会开火）", ok_bad,
+            json.dumps(rv.get("out") or {}, ensure_ascii=False)[:90])
+        qok = tool(c, "ask", {"corpus": "mine", "require": rev_req,
+                              "structure": True, "session": "x"})
+        chk("S33c", "支序闸门：同一个查询在原版上不抛（正常路径不受影响）",
+            qok["out"].get("ok") is True and len(qok["out"].get("nodes") or []) > 0)
+
+        # ── S34：max_branches 截断且账平（外部评审 A2，2026-10-25）────
+        # 空需求支数最多（内置语料 30+ 支）⇒ max_branches=3 才真的截。
+        q3 = tool(c, "ask", {"corpus": "mine", "require": [],
+                             "structure": True, "max_branches": 3})
+        o3 = q3["out"]
+        tot, shown, hid = (o3.get("branches_total"), o3.get("branches_shown"),
+                           o3.get("branches_hidden"))
+        chk("S34a", "max_branches=3 ⇒ 只给 3 支，total/shown/hidden 三者账平",
+            o3.get("ok") is True and len(o3.get("nodes") or []) == 3
+            and shown == 3 and tot > 3 and shown + hid == tot,
+            f"total={tot} shown={shown} hidden={hid}"
+            f"｜实际 {len(o3.get('nodes') or [])} 支")
+        q4 = tool(c, "ask", {"corpus": "mine", "require": [],
+                             "structure": True})
+        q5 = tool(c, "ask", {"corpus": "mine", "require": [],
+                             "structure": True, "max_branches": 0})
+        same = (json.dumps(q4["out"], ensure_ascii=False, sort_keys=True)
+                == json.dumps(q5["out"], ensure_ascii=False, sort_keys=True))
+        chk("S34b", "max_branches=0（默认）与不传该参数逐字相同", same)
+
+        # ── S35：orient 倒读日志（外部评审 A4，2026-10-25）────────────
+        import time as _t
+        log = store / "log" / "mcp-calls.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        row = json.dumps({"tool": "ask", "actor": "agent", "summary": {}})
+        with io.open(log, "w", encoding="utf-8", newline="\n") as f:
+            for _ in range(10000):
+                f.write(row + "\n")
+        c3 = MCP({"LDV_MCP_STORE": str(store)})
+        t0 = _t.perf_counter()
+        r1 = tool(c3, "orient", {"corpus": "mine"})
+        t1 = _t.perf_counter() - t0
+        with io.open(log, "a", encoding="utf-8", newline="\n") as f:
+            for _ in range(90000):
+                f.write(row + "\n")
+        t0 = _t.perf_counter()
+        r2 = tool(c3, "orient", {"corpus": "mine"})
+        t2 = _t.perf_counter() - t0
+        c3.close()
+        chk("S35", "orient 倒读日志：10 万行耗时 < 1 万行的 1.5 倍（且绝对 < 1s）",
+            r1["out"].get("ok") is True and r2["out"].get("ok") is True
+            and t2 < max(t1 * 1.5, t1 + 0.2) and t2 < 1.0,
+            f"1 万行 {t1 * 1000:.1f}ms｜10 万行 {t2 * 1000:.1f}ms"
+            f"｜比值 {t2 / max(t1, 1e-9):.2f}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S32）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S35）")
     return 1 if FAIL else 0
 
 

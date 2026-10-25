@@ -75,7 +75,7 @@ from ldv.core.interfaces import WeightedRecord
 from ldv.corpus.loader import load_edges, load_nodes
 from ldv.tools import usage_store
 
-FIELDS = ("require", "forbid")
+FIELDS = ("require", "forbid", "max_branches")
 UI_PLUGINS = ("keyset",)
 
 #: 默认语料 —— 实测**内容最多、节点也不少**的那份（7115 项 ⇒ 37 个方向 / 8 层）。
@@ -532,7 +532,13 @@ class App:
                 "node": nodes[0] if len(nodes) == 1 else None,
                 "nodes": shown,
                 "n_branches": len(nodes),
+                # ★ 三个字段让账平（外部评审 A2，2026-10-25 接上）：
+                #   截断会让 `Σ各支 ≠ n_answer`，客户端一算就以为切分漏了
+                #   （实测：31 支截成 12，3610 ≠ 7115）。给出 total/shown/hidden，
+                #   客户端验算 `shown + hidden == total`，并把断言从 `==` 放宽到 `≤`。
+                "branches_total": len(nodes),
                 "branches_shown": len(shown),
+                "branches_hidden": len(nodes) - len(shown),
                 "path": path, "stopped": why,
                 "n_answer": len(ans),
                 "answer_ids": sorted(ans),

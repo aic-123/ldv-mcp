@@ -73,6 +73,29 @@ SERVER_VERSION = "0.1.0"
 CALL_LOG = STORE / "log" / "mcp-calls.jsonl"
 
 
+def _tail(path, n: int = 5) -> list[str]:
+    """从文件**尾**读最后 n 行，不整篇读进内存。
+
+    ⚠️ 旧写法 `list(io.open(path))[-n:]` 为了 5 行把整个日志读进来 ——
+       日志只追加、无轮转 ⇒ 越用越慢，而 `orient` 是每问都要调的
+       （外部评审 A4，2026-10-25 修）。
+    """
+    block, data = 4096, b""
+    try:
+        with io.open(path, "rb") as f:
+            f.seek(0, 2)                      # 2 = 文件尾
+            size = f.tell()
+            while size > 0 and data.count(b"\n") <= n:
+                step = min(block, size)
+                size -= step
+                f.seek(size)
+                data = f.read(step) + data
+    except OSError:
+        return []
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[-n:]
+
+
 def _log_call(tool: str, args: dict, actor: str, summary: dict) -> None:
     """一次工具调用一行。写不进去**不炸**（日志是审计件，不是判据）——
     但也不静默：返回写没写成，调用方可以报。"""
@@ -301,7 +324,7 @@ def _tool_orient(a: dict) -> dict:
             out["session"] = SESS.status(nodes.parent, sid)
     recent: list[dict] = []
     if CALL_LOG.is_file():
-        for line in list(io.open(CALL_LOG, encoding="utf-8"))[-5:]:
+        for line in _tail(CALL_LOG, 5):
             try:
                 recent.append(json.loads(line))
             except ValueError:
@@ -312,11 +335,27 @@ def _tool_orient(a: dict) -> dict:
     return out
 
 
+_ACTOR_CACHE: dict = {"sig": None, "val": None}   # (size, mtime) → 分解读数
+
+
 def _actor_split(app) -> dict:
-    """正式记录里多少条来自 agent 声明的下钻（读数，不打分不拦截）。"""
+    """正式记录里多少条来自 agent 声明的下钻（读数，不打分不拦截）。
+
+    ⚠️ 这一处**语义上要全量**（分解是整个历史，不是最近几条）⇒ 不能倒读。
+       外部评审 A4 顺带查到它：日志线性增长时它也线性变慢。缓解 = 按
+       (size, mtime) 缓存 —— 同一份日志重复调用不重算；跨调用仍随日志增长，
+       这是已知的线性点，写在这里不假装没有。
+    """
     from ldv.tools import usage_store as US
 
     agent_q: set[tuple[str, str]] = set()
+    try:
+        st = CALL_LOG.stat()
+        sig = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        sig = None
+    if sig is not None and _ACTOR_CACHE.get("sig") == sig:
+        return _ACTOR_CACHE["val"]
     if CALL_LOG.is_file():
         for line in io.open(CALL_LOG, encoding="utf-8"):
             try:
@@ -329,9 +368,12 @@ def _actor_split(app) -> dict:
                              str(row.get("summary", {}).get("did", ""))))
     rows = US.load(app._usage_dir)
     n_agent = sum(1 for r in rows if (r.get("qfp", ""), r.get("did", "")) in agent_q)
-    return {"记录数": len(rows), "agent 声明的下钻": n_agent,
-            "其余（人 / 未声明）": len(rows) - n_agent,
-            "note": "actor 是调用方**声明**的，服务器不验（同 filled_by）"}
+    val = {"记录数": len(rows), "agent 声明的下钻": n_agent,
+           "其余（人 / 未声明）": len(rows) - n_agent,
+           "note": "actor 是调用方**声明**的，服务器不验（同 filled_by）"}
+    if sig is not None:
+        _ACTOR_CACHE["sig"], _ACTOR_CACHE["val"] = sig, val
+    return val
 
 
 def _tool_ask(a: dict) -> dict:
@@ -381,12 +423,21 @@ def _tool_ask(a: dict) -> dict:
     q = {"require": req, "forbid": forb}
     if plugin:
         q["plugin"] = plugin
+    # ★ 接口截断（外部评审 A2，2026-10-25 接上）：0 = 不截（默认，与从前逐字相同）。
+    #   截断时 entry 一并给 branches_total/shown/hidden 让账平 ——
+    #   只截不给账，客户端会把「Σ各支 < n_answer」读成切分漏了。
+    if a.get("max_branches"):
+        q["max_branches"] = int(a["max_branches"])
     r = app.query(q)
     if not r.get("ok"):
         return r
 
     nodes = r.get("nodes") or []
-    V.check_order([n["did"] for n in nodes], [n["did"] for n in nodes])
+    # ★ 支序原样的**运行时闸门**（2026-10-25 修，外部评审 A1）：
+    #   两个入参必须来自**不同来源** —— 内核原始序列 vs 中转层实际交给下一环的序列。
+    #   旧写法是同一个列表推导跟自己比 ⇒ 恒真 ⇒ 这道闸**结构上不可能开火**，
+    #   README 里「支序原样」因此只剩测试层（S10）保证，运行时那一层是空的。
+    raw_dids = [n["did"] for n in (r.get("nodes") or [])]
     # ★ 本次查询用到了哪些**派生维度**（agent 建的轴，不是材料写的）——
     #   必须报：查 `topic=DAPO` 与查 `type=立场` 的证据等级不同。
     dfields = set(app.derived or {})
@@ -396,8 +447,11 @@ def _tool_ask(a: dict) -> dict:
     #   与内核两段通道同构：查询进缓冲，下钻才 promote。作用域按会话。
     sess_info: dict = {}
     if sid and nodes_dir is not None:
+        # 中转点①：曝光给会话缓冲的序列，必须与内核逐字相同
+        exposed = [n["did"] for n in nodes]
+        V.check_order(raw_dids, exposed)
         sess_info = SESS.expose(nodes_dir.parent, sid, qfp=app._last_qfp,
-                                dids=[n["did"] for n in nodes],
+                                dids=exposed,
                                 n_answer=r.get("n_answer") or 0)
     # ★ 读正文（2026-10-24 并进 ask：读内容是查询的一个参数，不是新工具）
     # ★★ 默认只交**正文 + 句柄**，id 与结构留在本地（用户 2026-10-24 定：
@@ -433,6 +487,11 @@ def _tool_ask(a: dict) -> dict:
     out = {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
            "session": sess_info,
            "n_answer": r.get("n_answer"),
+           # ★ 平账三字段（默认也给）：`branches_hidden > 0` 时说明**还有支没摆出来**，
+           #   调用方据此知道「不是只有这些」—— 与 items 的「还有 K 条没给」同一条规矩。
+           "branches_total": r.get("branches_total"),
+           "branches_shown": r.get("branches_shown"),
+           "branches_hidden": r.get("branches_hidden"),
            "items": items,
            # ★ 三条「不许猜」的规矩（2026-10-24 用户定）
            #   ① 多条同时能回答 ⇒ **都列出来**，让 agent 兼并后给出回答，
@@ -478,11 +537,17 @@ def _tool_ask(a: dict) -> dict:
     if a.get("structure"):
         out.update({"nodes": nodes, "answer_ids": ids_sorted,
                     "n_branches": r.get("n_branches"),
+                    "branches_total": r.get("branches_total"),
+                    "branches_shown": r.get("branches_shown"),
+                    "branches_hidden": r.get("branches_hidden"),
                     "ordered_by": r.get("ordered_by"),
                     "lens": ({"id": spec.get("id"),
                               "generated_by": spec.get("generated_by"),
                               "corpus_fingerprint": spec.get("corpus_fingerprint")}
                              if spec else None)})
+        # 中转点②：**最终交付**的支序与内核逐字相同
+        #   （放在 update 之后 —— 比的是真的交出去的那份，不是中间变量）
+        V.check_order(raw_dids, [n["did"] for n in out["nodes"]])
     return out
 
 
@@ -907,7 +972,11 @@ TOOLS = [
                          "session": {"type": "string",
                                      "description": "会话名（调用方声明，默认 default）"},
                          "structure": {"type": "boolean",
-                                        "description": "连分支与谓词一起返回（默认不给：agent 用不上）"},
+                                       "description": "连分支与谓词一起返回（默认不给：agent 用不上）"},
+                         "max_branches": {"type": "integer",
+                                          "description": ("最多返回几支（0 = 不截，默认）。"
+                                                          "截断时一并给 branches_total/shown/hidden "
+                                                          "让账平 —— 别拿没给的当不存在")},
                          "with_body": {"type": "boolean",
                                        "description": "连正文一起返回（读内容是查询的一个选项，"
                                                       "不是单独的工具）"},
