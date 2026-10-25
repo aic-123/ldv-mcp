@@ -195,6 +195,18 @@ def run_flow(store: Path) -> list[str]:
             f"写入={ra['out'].get('ok')}"
             f"｜from_cache={(a5['out'].get('cached_answer') or {}).get('from_cache')}")
 
+        # ⑧-b 自己的产物进结构（2026-10-25）：答完之后「我答过什么」查得到。
+        #   这是「外挂主体性」里最像主体的那一环 —— 不然 AI 的产物只是缓存。
+        mine = c.tool("ask", {"corpus": "flow", "require": ["我=是"]})
+        mine_ans = c.tool("ask", {"corpus": "flow", "require": ["type=回答"]})
+        chk("F13", "自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）",
+            mine["out"].get("n_answer") == 1
+            and mine_ans["out"].get("n_answer") == 1
+            and "DAPO" in str((mine_ans["out"].get("items") or [{}])[0].get("text")),
+            f"node_id={ra['out'].get('node_id')}"
+            f"｜我=是 {mine['out'].get('n_answer')} 项"
+            f"｜type=回答 {mine_ans['out'].get('n_answer')} 项")
+
         # ⑨ 语料变 ⇒ 缓存明说过期（不是静默沿用）
         (nodes / "n1.md").write_text(
             (nodes / "n1.md").read_text(encoding="utf-8") + "\n补一句：实测复现。\n",
@@ -248,8 +260,10 @@ def run_flow(store: Path) -> list[str]:
 
         # ⑫ 收尾对账：orient 说清「记得什么、查过什么」
         o2 = c.tool("orient", {"corpus": "flow"})
-        chk("F12", "收尾 orient 与写入一致（3 项，且有最近动作）",
-            o2["out"].get("n_items") == 3
+        # ★ 4 项 = 3 条材料 + 1 条**自己的回答**（F08 的 remember_answer 现在写节点）
+        #   —— 这个 4 本身就是「主体性」该有的样子：库里有我写的东西。
+        chk("F12", "收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）",
+            o2["out"].get("n_items") == 4
             and len(o2["out"].get("recent_calls") or []) > 0,
             f"n_items={o2['out'].get('n_items')}"
             f"｜recent={len(o2['out'].get('recent_calls') or [])} 条")
@@ -426,7 +440,7 @@ def edge_cases(store: Path) -> None:
         r25 = c.tool("ask", {"corpus": "edge", "require": [], "reject_below": 0.0})
         r26 = c.tool("ask", {"corpus": "edge", "require": []})
         E("23", "两个语料互不可见（edge 的 n1 不在 flow 里）",
-          r23["out"].get("n_answer") == 3,       # flow = 3 条（空库不再有占位项）
+          r23["out"].get("n_answer") == 4,       # flow = 3 条材料 + 1 条自己的回答
           f"flow n_answer={r23['out'].get('n_answer')}")
         E("24", "不存在的语料 ⇒ 拒并说清（不建一个空库）",
           r24["out"].get("ok") is False or bool(r24.get("isError")),
@@ -463,7 +477,7 @@ def main() -> int:
     chk("D01", "三轮读数逐字相同 ⇒ 轨迹是确定性的（不是运气）", same,
         "｜".join(runs[0]) + ("" if same else f"｜第2轮={runs[1]}｜第3轮={runs[2]}"))
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（F01–F12 / E01–E26 / D01）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（F01–F13 / E01–E26 / D01）")
     return 1 if FAIL else 0
 
 

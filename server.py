@@ -823,9 +823,21 @@ def _tool_remember_answer(a: dict) -> dict:
     #   正文改了缓存不会失效（真实流程探针 F09 抓到过）。
     fp = _content_fp(nodes_dir)
     key = _cache_key(req, forb, plugin)
+    # ★★ 自己的产物进结构（2026-10-25，评估补的那一环）——
+    #   `认知原型.md` 的第三句承诺是「它能**包含自己**：自己的产物标成 `我=是`
+    #   进结构，于是反思是可查询的项」。repo 侧靠 `make_self_corpus` 抽的是
+    #   **仓库里的文档与断言**；MCP 侧的「自己」是**AI 的运行时回答**，
+    #   原来只写进 `answers/*.json` 缓存 —— 查不到、不参与 next、不参与反思。
+    #   ⇒ 顺手写一条**节点**：`type=回答` + `我=是` + `filled_by=agent` +
+    #     `source` 指回材料。于是「我上个月对这个答过什么」变成一条可查的项。
+    #   ⚠️ **同键再答不覆写**（覆写就是改写自己的记忆）⇒ 写新版本 `-2`/`-3`，
+    #      历史留着 —— 「我改过想法」本身是反思的材料。
+    node_id = _write_self_node(nodes_dir, key, req, forb, answer, src, a)
     doc = {"qfp": key, "corpus_fp": fp, "plugin": plugin,
            "require": sorted(req), "forbid": sorted(forb),
            "answer": answer, "source": src,
+           # ★ 与节点**同源**：缓存命中时校验这条节点还在（被 undo 删掉 ⇒ 作废）
+           "node_id": node_id,
            "filled_by": "agent", "generated_by": _actor(a),
            "derived_from": ("agent 的一次回答（不是材料）；来源条目见 source —— "
                             "语料指纹一变，这条整体作废"),
@@ -833,10 +845,49 @@ def _tool_remember_answer(a: dict) -> dict:
     p = _answers_dir(nodes_dir) / f"{key}.json"
     L.create_exclusive(p, json.dumps(doc, ensure_ascii=False, indent=1))
     return {"ok": True, "written": True, "key": key, "path": str(p),
+            "node_id": node_id,
             "corpus_fingerprint": fp,
             "note": ("答案已编进树：语料指纹不变时，同类问题先命中这里，"
                      "不必再问 agent；**指纹一变整体作废**；删掉这个文件即回退。"
-                     "它带 filled_by: agent，**永不进「已验证」**")}
+                     "它带 filled_by: agent，**永不进「已验证」**。"
+                     f"同时写了一条自己的记录（id={node_id}，我=是）—— "
+                     "`ask(require=['我=是'])` 查得到，undo 它即回退")}
+
+
+def _write_self_node(nodes_dir: Path, key: str, req, forb, answer: str,
+                     src: list[str], a: dict) -> str:
+    """把这次回答写成一条**结构里的项**（`我=是`）。返回节点 id。
+
+    与 `remember` 同一条纪律：**只追加不覆写** ⇒ 同键再答写 `-2` / `-3`，
+    历史留着（「我改过想法」是反思的材料，不是垃圾）。
+
+    ⚠️ `evidence_status: 未验证` —— agent 自己写的回答**永远**是这个状态，
+       要「已验证」只能外部授予（`§S5` / `README` 的能力表）。
+    """
+    base = f"ans-{key}"
+    nid = base
+    n = 1
+    while (nodes_dir / (_safe_name(nid) + ".md")).exists():
+        n += 1
+        nid = f"{base}-{n}"
+    fields = {
+        "type": "回答",
+        "我": "是",
+        "evidence_status": "未验证",
+        "generated_by": _actor(a),
+        "derived_from": (f"对 require={sorted(req)} forbid={sorted(forb)} 的回答"
+                         "（不是材料；来源见 source）"),
+        "source": list(src),
+    }
+    lines = ["---", f'id: "{nid}"', 'filled_by: "agent"',
+             f'remembered_at: "{datetime.now().isoformat(timespec="seconds")}"']
+    for k in sorted(fields):
+        lines.append(f"{k}: {json.dumps(fields[k], ensure_ascii=False)}")
+    lines += ["---", "", answer.rstrip() + chr(10)]
+    with L.store_lock(STORE):
+        L.create_exclusive(nodes_dir / (_safe_name(nid) + ".md"),
+                           chr(10).join(lines))
+    return nid
 
 
 def _content_fp(nodes_dir: Path) -> str:
@@ -856,6 +907,11 @@ def _content_fp(nodes_dir: Path) -> str:
 
     h = hashlib.sha1()
     for p in sorted(nodes_dir.rglob("*.md")):
+        # ★ 跳过**自己的记录**（`ans-*`，`remember_answer` 写的那条）。
+        #   它们不是「材料」，是「我对材料的回答」⇒ 写它不该让答案缓存失效
+        #   （否则刚写完缓存就过期，缓存等于没有）。实测踩到过。
+        if p.name.startswith("ans-"):
+            continue
         try:
             st = p.stat()
         except OSError:
@@ -877,6 +933,13 @@ def _cache_lookup(app, nodes_dir: Path, req, forb, plugin: str):
         except (OSError, ValueError):
             return None, "缓存文件读不出（当没命中）"
         if doc.get("corpus_fp") == fp:
+            # ★ 与节点**同源**（2026-10-25）：这条缓存对应的「自己的记录」
+            #   如果被 undo 删掉了，缓存也必须作废 —— 否则就是「记忆删了、
+            #   答案还在」。老缓存没有 `node_id`（升级前写的）⇒ 不校验，按原样放行。
+            nid = doc.get("node_id")
+            if nid and not (nodes_dir / (_safe_name(str(nid)) + ".md")).is_file():
+                return None, (f"这条答案对应的记录（{nid}）已被删除 ⇒ 缓存作废，"
+                              "重新问一次 agent")
             return doc, ""
         return None, (f"语料指纹变了（缓存记的是 {doc.get('corpus_fp')}、"
                       f"现在是 {fp}）⇒ 这条**已过期**，不采用")

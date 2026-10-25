@@ -18,14 +18,16 @@
         lost=['n1']｜untouched=True｜事后仍 3 项
   [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
         写入=True｜from_cache=True
+  [过] F13 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）
+        node_id=ans-05add24c6ad6385b｜我=是 1 项｜type=回答 1 项
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
-        agent 拒=True｜outcome=-1.0｜跳过=['D3']｜精确问回=[]
+        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
         keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
-  [过] F12 收尾 orient 与写入一致（3 项，且有最近动作）
-        n_items=3｜recent=5 条
+  [过] F12 收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）
+        n_items=4｜recent=5 条
 
 ── 边缘矩阵（26 条）──
   [过] E01 未知键 ⇒ 报「超出结构」并给相近建议（不静默返 0）
@@ -73,7 +75,7 @@
   [过] E22 max_branches=1 ⇒ 1 支 + branches_hidden>0
         支=1｜hidden=4
   [过] E23 两个语料互不可见（edge 的 n1 不在 flow 里）
-        flow n_answer=3
+        flow n_answer=4
   [过] E24 不存在的语料 ⇒ 拒并说清（不建一个空库）
         {"_raw": "ValueError: 语料 '没有这个' 不在产品 store 下，也不是一个目录（试过 C:\\
   [过] E25 reject_below 传了但**没有负事件** ⇒ 一条都不跳
@@ -100,14 +102,16 @@
         lost=['n1']｜untouched=True｜事后仍 3 项
   [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
         写入=True｜from_cache=True
+  [过] F13 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）
+        node_id=ans-05add24c6ad6385b｜我=是 1 项｜type=回答 1 项
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
-        agent 拒=True｜outcome=-1.0｜跳过=['D3']｜精确问回=[]
+        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
         keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
-  [过] F12 收尾 orient 与写入一致（3 项，且有最近动作）
-        n_items=3｜recent=5 条
+  [过] F12 收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）
+        n_items=4｜recent=5 条
 
 ═══ 第 3 轮 ═══
 
@@ -128,17 +132,19 @@
         lost=['n1']｜untouched=True｜事后仍 3 项
   [过] F08 remember_answer 后同类问题命中缓存（单独一栏 from_cache）
         写入=True｜from_cache=True
+  [过] F13 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 查得到（正文是我写的）
+        node_id=ans-05add24c6ad6385b｜我=是 1 项｜type=回答 1 项
   [过] F09 语料一变 ⇒ 缓存**明说**过期，不静默沿用
         有 cache_note=True｜from_cache=None
   [过] F10 判错闭环：agent 拒 / 人记 -1 / 支不摆出来 / 精确问回来
-        agent 拒=True｜outcome=-1.0｜跳过=['D3']｜精确问回=[]
+        agent 拒=True｜outcome=-1.0｜跳过=['D6']｜精确问回=[]
   [过] F11 next 给得出下一步（按档位分组：必须 / 可延后 / 可忽略）
         keys=['corpus', 'note', 'ok', 'plugin', '可延后', '可忽略', '必须', '清单']
-  [过] F12 收尾 orient 与写入一致（3 项，且有最近动作）
-        n_items=3｜recent=5 条
+  [过] F12 收尾 orient 与写入一致（4 项 = 3 材料 + 1 我自己的回答）
+        n_items=4｜recent=5 条
 
 ── 三轮确定性（同一轨迹、独立 store，读数必须逐字相同）──
   [过] D01 三轮读数逐字相同 ⇒ 轨迹是确定性的（不是运气）
-        空库项数=0｜写入后项数=3｜全库=3｜立场=1｜判错后跳过=['D3']｜少=1
+        空库项数=0｜写入后项数=3｜全库=3｜立场=1｜判错后跳过=['D6']｜少=1
 
-✓ 全过（F01–F12 / E01–E26 / D01）
+✓ 全过（F01–F13 / E01–E26 / D01）

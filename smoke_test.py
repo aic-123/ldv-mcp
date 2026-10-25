@@ -753,11 +753,53 @@ def main() -> int:
             and "不在语料里" in json.dumps(dz_doc, ensure_ascii=False),
             json.dumps(dz_doc, ensure_ascii=False)[:90])
 
+        # ── S38：自己的产物进结构（2026-10-25，评估补的那一环）──────────
+        # `认知原型.md` 第三句承诺：「它能**包含自己** —— 自己的产物标成 `我=是`
+        # 进结构，于是反思是可查询的项」。repo 侧靠 make_self_corpus 抽**仓库文档**；
+        # MCP 侧的「自己」是 **AI 的运行时回答** ⇒ remember_answer 顺手写一条节点。
+        # 四条：写进去 / 查得到 / 同键写新版不覆写 / 删了它缓存作废。
+        own = store / "_data" / "own" / "nodes"
+        own.mkdir(parents=True)
+        (own / "m1.md").write_text('---\nid: "m1"\ntype: 事实\n---\n\n材料一。\n',
+                                   encoding="utf-8", newline="\n")
+        sa = tool(c, "remember_answer", {"corpus": "own", "require": ["type=事实"],
+                                         "answer": "我的回答：材料一说明 X。",
+                                         "source": ["m1"]})
+        nid = sa["out"].get("node_id")
+        q_self = tool(c, "ask", {"corpus": "own", "require": ["我=是"]})
+        q_ans = tool(c, "ask", {"corpus": "own", "require": ["type=回答"]})
+        chk("S38a", "★ 自己的产物进结构：答完 ⇒ `我=是` / `type=回答` 都查得到",
+            bool(nid) and q_self["out"].get("n_answer") == 1
+            and q_ans["out"].get("n_answer") == 1
+            and "我的回答" in str((q_ans["out"].get("items") or [{}])[0].get("text")),
+            f"node_id={nid}｜我=是 {q_self['out'].get('n_answer')} 项"
+            f"｜type=回答 {q_ans['out'].get('n_answer')} 项")
+        hit1 = tool(c, "ask", {"corpus": "own", "require": ["type=事实"]})
+        chk("S38b", "★ 写自己的记录**不**让答案缓存失效（它是对材料的回答，不是材料）",
+            (hit1["out"].get("cached_answer") or {}).get("from_cache") is True,
+            f"from_cache={(hit1['out'].get('cached_answer') or {}).get('from_cache')}")
+        sa2 = tool(c, "remember_answer", {"corpus": "own", "require": ["type=事实"],
+                                          "answer": "我的第二版回答。",
+                                          "source": ["m1"]})
+        q_self2 = tool(c, "ask", {"corpus": "own", "require": ["我=是"]})
+        chk("S38c", "★ 同键再答 ⇒ 写新版（-2），**不覆写**旧记录（我改过想法要留痕）",
+            sa2["out"].get("node_id", "").endswith("-2")
+            and q_self2["out"].get("n_answer") == 2,
+            f"第二版={sa2['out'].get('node_id')}"
+            f"｜我=是 现在 {q_self2['out'].get('n_answer')} 项")
+        # 手工删掉当前那条（MCP 没有删节点的工具 —— undo 是「只算不改」）
+        (own / (str(nid) + ".md")).unlink(missing_ok=True)
+        hit2 = tool(c, "ask", {"corpus": "own", "require": ["type=事实"]})
+        chk("S38d", "★ 删掉那条记录 ⇒ 缓存**作废并说明**（记忆删了，答案不能还在）",
+            not (hit2["out"].get("cached_answer") or {}).get("from_cache")
+            and "已被删除" in str(hit2["out"].get("cache_note")),
+            f"note={str(hit2['out'].get('cache_note'))[:50]}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S37）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S38）")
     return 1 if FAIL else 0
 
 
