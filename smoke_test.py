@@ -730,11 +730,28 @@ def main() -> int:
             and dflt["out"].get("n_answer") == n_all,
             f"skipped={dflt['out'].get('skipped_rejected')}｜n_answer={dflt['out'].get('n_answer')}")
 
+        # ── S37：derive 的**失败路径**（外部评审 D2）──────────────────
+        # 「什么算问不出来」已经有结构判定（未知键 / 零命中）；这里守另一半：
+        # derive **不许凭空造 id** —— agent 编一个不存在的节点，必须当场拒。
+        # ⚠️ 这条是「失败路径判据」：S15 只验了 happy path（能查、能回退），
+        #   而「编造 id」正是这个能力最容易被滥用的方式（坑 11e 同一条纪律）。
+        dz = tool(c, "derive", {"corpus": "mine", "name": "编的维度",
+                                "values": {"不存在-9999": "x"},
+                                "rationale": "试一下", "derived_from": "编的"})
+        # ⚠️ 错误返回有**两种形状**：业务错 `{"ok": False, "error": …}`、
+        #   异常错 `{"_raw": 原文}`（SpecError 走这条）。判据必须两种都认 ——
+        #   只认 ok=False 会把「真的拒了」判成「没拒」（S33b 踩过同一个坑）。
+        dz_doc = dz["out"]
+        chk("S37", "★ derive 不许凭空造 id：不在语料里的 id ⇒ 当场拒",
+            (dz_doc.get("ok") is False or "_raw" in dz_doc)
+            and "不在语料里" in json.dumps(dz_doc, ensure_ascii=False),
+            json.dumps(dz_doc, ensure_ascii=False)[:90])
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S36）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S37）")
     return 1 if FAIL else 0
 
 
