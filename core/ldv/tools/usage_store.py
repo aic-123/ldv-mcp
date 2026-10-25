@@ -309,11 +309,18 @@ def stage_load(corpus_dir: Any) -> list[dict]:
 
 
 def promote(corpus_dir: Any, *, qfp: str, did: str, propensity: float,
-            note: str = "drill", snapshot: str = "") -> dict:
-    """缓冲 → 正式：把 `did` 标成 outcome = +1，并从这批的 `shown` 里移除。
+            note: str = "drill", snapshot: str = "",
+            outcome: float = 1.0) -> dict:
+    """缓冲 → 正式：把 `did` 标成一次**真实交互**，并从这批的 `shown` 里移除。
 
     ★★ **不在缓冲里的 did 不许 promote** —— 否则就是把「翻到了」当成「用了」。
        这是与「不合成反馈」同一条线：信号必须来自真实动作。
+
+    ★ `outcome` 可以是**负的**（2026-10-25，外部评审 D1）——「这一支被推翻」
+      与「这一支有用」是同一本账的两个方向，不是两套真值标准。
+      默认 `1.0` ⇒ 旧调用方逐字不变。
+      ⚠️ 负值**只进倾向**（排序与跳过阈值），**不改候选集** ——
+         见 `entry._rejected_dirs` 与 `kernel.py:851` 的假阴警告。
 
     `snapshot` 透传给 `append`（§I7 的方向状态留痕）。
     """
@@ -325,7 +332,7 @@ def promote(corpus_dir: Any, *, qfp: str, did: str, propensity: float,
     if cur is None or did not in cur["shown"]:
         return {"ok": False, "written": False,
                 "why": "这一支不在这次查询的展示里，不记"}
-    out = append(corpus_dir, did=did, outcome=1.0, propensity=propensity,
+    out = append(corpus_dir, did=did, outcome=outcome, propensity=propensity,
                  qfp=qfp, note=note, snapshot=snapshot)
     rest = [x for x in cur["shown"] if x != did]
     if rest:

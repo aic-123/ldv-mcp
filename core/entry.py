@@ -75,7 +75,7 @@ from ldv.core.interfaces import WeightedRecord
 from ldv.corpus.loader import load_edges, load_nodes
 from ldv.tools import usage_store
 
-FIELDS = ("require", "forbid", "max_branches")
+FIELDS = ("require", "forbid", "impact", "max_branches", "reject_below")
 UI_PLUGINS = ("keyset",)
 
 #: 默认语料 —— 实测**内容最多、节点也不少**的那份（7115 项 ⇒ 37 个方向 / 8 层）。
@@ -188,6 +188,8 @@ class App:
         self._last_qfp = ""
         self._tendency: dict[str, float] = {}
         self.usage_loaded = 0
+        #: 支级跳过的阈值（`None` = 不跳）。**外生**：每次 `query` 从 spec 取。
+        self._reject_below: float | None = None
         # 遗忘的「现在」——**必须可注入**：衰减依赖当前时刻，判据要能固定它，
         # 否则同一条判据在不同时间跑出不同结果（那就是不可复现）。
         self._usage_now = usage_now
@@ -237,12 +239,19 @@ class App:
         # ★ 遗忘在这里发生：按记录年龄降权（**记录一条不删**）
         self._tendency = usage_store.aged_tendency(self._usage_dir, now=self._usage_now)
 
-    def _record_use(self, k, d) -> dict | None:
+    def _record_use(self, k, d, *, outcome: float = 1.0) -> dict | None:
         """下钻 = 这次「这个方向有用」的**真实**信号（不是合成反馈）。
 
         走 `usage_store.promote`：从**缓冲区**里把这一支提升成正式记录。
         ⚠️ 不在缓冲里的支**不许 promote** —— 否则就是把「翻到了」当成「用了」。
         ⚠️ 没被下钻的方向**不记负信号**（`§K6`：没看见 ≠ 看见了不好）。
+
+        ★ **`outcome` 可以是负的**（2026-10-25，外部评审 D1）——「这一支被推翻」
+          与「这一支有用」是同一本账的两个方向，不是两套真值标准。
+          `core/selfopt.collect` 只按 `propensity` 过滤，负值天然进倾向
+          （半衰期同样作用于它 ⇒ **时变**可表达，布尔谓词表达不了）。
+        ⚠️ 负值**只改倾向、不改候选集** —— 见 `_rejected_dirs` 与 `kernel.py:851`
+          的警告（`invalidated` 不参与检索，否则项还在语料里 ⇒ 假阴）。
 
         ★ **§I7 在这里被消费**：下钻那一刻 `plugin.record(d)` 的输出随记录落盘。
           没有它，一条记录只知道「哪个方向有用」，不知道「**那一刻它长什么样**」——
@@ -253,14 +262,21 @@ class App:
         """
         if self._usage_dir is None:
             return None
-        rec = k.record_usage(d, {"outcome": 1.0})
+        rec = k.record_usage(d, {"outcome": outcome})
         if rec is None:
             return None
         snap = json.dumps(k.plugin.record(d), ensure_ascii=False, sort_keys=True)
         out = usage_store.promote(self._usage_dir, qfp=self._last_qfp, did=d.did,
-                                  propensity=rec.propensity, snapshot=snap)
+                                  propensity=rec.propensity, snapshot=snap,
+                                  outcome=outcome,
+                                  note="drill-wrong" if outcome < 0 else "drill")
         if out.get("written"):
             self._last_shown = [x for x in self._last_shown if x != d.did]
+            # ★ 记完**当场刷新倾向** —— `_load_usage` 只在 `__init__` 跑一次，
+            #   不刷新的话 `drill` 返回的 `tendency_after` 是**记之前**的旧值
+            #   （读数骗人：刚判错的支看起来「还没被推翻」）。
+            self._tendency = usage_store.aged_tendency(self._usage_dir,
+                                                       now=self._usage_now)
         return out
 
     def clear_usage(self) -> dict:
@@ -350,6 +366,44 @@ class App:
             out["precision"] = round(len(ans & mem) / max(1, len(mem)), 3)
         return out
 
+    def _rejected_dirs(self, k, req: frozenset) -> tuple[set[str], set[str]]:
+        """被推翻、且这次查询**没有明确问到**的方向（外部评审 C2，2026-10-25）。
+
+        判定两条，都**不涉语义**：
+
+            ① `倾向 < reject_below` —— 负事件累计（`drill(verdict="wrong")`），
+               半衰期同样作用于它 ⇒ **时变**可表达（布尔谓词表达不了）
+            ② 查询 require **不包含**该支的全部 `must` ⇒ 只是宽泛覆盖 ⇒ 可跳过；
+               反过来 `require ⊇ must` = 用户明确问到它 ⇒ **不跳**
+
+        ⚠️ `reject_below` **外生**（`spec` / 透镜声明）—— 系统不自己发明阈值。
+           不设 ⇒ 返回空 ⇒ 与从前的行为**逐字相同**（判据守这一条）。
+        ⚠️ 跳过是**产品决定**（人说这一支错了 ⇒ 它的项不再作为答案），
+           所以差额必须如实报（`rejected_items`）—— 不许静默改变候选集。
+        ⚠️ 与 `kernel.py:851` 对齐：`invalidated` 只进账本、不进检索（否则项还在
+           语料里 ⇒ 假阴）。本方法的跳过发生在**入口的切支结果**上、带差额，
+           不是内核层的静默假阴。
+        """
+        rb = self._reject_below
+        if rb is None or not self._tendency:
+            return set(), set()
+        rejected: set[str] = set()
+        for d in k.all_directions():
+            t = self._tendency.get(d.did)
+            if t is None or not (t < rb):
+                continue
+            pl = d.payload
+            must = set(pl[0]) if isinstance(pl, tuple) and len(pl) == 2 else set(pl or ())
+            if req and req >= must:            # 明确问到 ⇒ 不跳
+                continue
+            rejected.add(d.did)
+        if not rejected:
+            return set(), set()
+        lost: set[str] = set()
+        for did in rejected:
+            lost |= set(k.members_of(k.direction(did)))
+        return rejected, lost
+
     def _resolve(self, k, req, forb):
         """把答案集**切成几支**，每一支都是「装不下就能再分」的最细节点。
 
@@ -364,47 +418,65 @@ class App:
         ⇒ 答案散开 ⇒ 返回 N 个节点，且**它们合起来正好是答案**（不重不漏）
         """
         ans = self.answer_set(req, forb)
+        # ★ 支级跳过（外部评审 C2）：被推翻、且没被明确问到的支不摆出来，
+        #   它们的项从答案里剔除 —— **差额如实报**（query 的 rejected_items）。
+        rej_dids, lost = self._rejected_dirs(k, req)
+        if lost:
+            ans = set(ans) - lost
+            if not ans:
+                return ([self._node(k, k.root, ans,
+                                    "满足约束的项都在被推翻的支里 —— 要看得把 "
+                                    "require 说全（含该支的 must），或调 reject_below")],
+                        [], "rejected", ans, sorted(rej_dids), len(lost))
         if not ans:
-            return [self._node(k, k.root, ans, "没有项满足这组约束")], [], "empty", ans
+            return [self._node(k, k.root, ans, "没有项满足这组约束")], [], "empty", ans, [], 0
         path: list[str] = []
         d = k.root
         # 先走「单支」的那一段（这一段的路径要报出来）
         while True:
             kids = k.children_of(d)
             if not kids:
-                return [self._node(k, d, ans, "已经是最细的一层")], path, "leaf", ans
+                return [self._node(k, d, ans, "已经是最细的一层")], path, "leaf", ans, [], 0
             parts = [(c, ans & k.members_of(c)) for c in kids]
-            parts = [(c, p) for c, p in parts if p]
+            parts = [(c, p) for c, p in parts if p and c.did not in rej_dids]
             if len(parts) == 1 and parts[0][1] == ans:
                 path.append(d.did)
                 d = parts[0][0]
                 continue
             break
         if len(parts) == 1:                     # 剩下那点不全在这一支（滞留项）⇒ 停在这
-            return [self._node(k, d, ans, "剩下的项留在这一层，子方向装不下")], path, "leaf", ans
+            return ([self._node(k, d, ans, "剩下的项留在这一层，子方向装不下")],
+                    path, "leaf", ans, [], 0)
         nodes: list[dict] = []
         for c, p in parts:
-            nodes.extend(self._spread(k, ans, c))
+            nodes.extend(self._spread(k, ans, c, skip=rej_dids))
         why = f"答案横跨 {len(nodes)} 支，每支都装不下全部"
-        return nodes, path, "split", ans
+        return nodes, path, why, ans, sorted(rej_dids), len(lost)
 
-    def _spread(self, k, full: set[str], d, depth: int = 0) -> list[dict]:
-        """在 `d` 之下继续切，直到每一支都由单一子节点装不下为止。"""
+    def _spread(self, k, full: set[str], d, depth: int = 0,
+                skip: frozenset[str] | set[str] = frozenset()) -> list[dict]:
+        """在 `d` 之下继续切，直到每一支都由单一子节点装不下为止。
+
+        `skip` = 被推翻、不摆出来的方向（外部评审 C2）—— 在分叉处就滤掉，
+        所以它们既不出现在结果里，也不参与「装不下」的判定。
+        """
         if depth > 64:                          # 防病态深树（正常到不了）
             return [self._node(k, d, full, "太深了，停在这是为了不递归爆栈")]
         kids = k.children_of(d)
         if not kids:
             return [self._node(k, d, full, "已经是最细的一层")]
         parts = [(c, full & k.members_of(c)) for c in kids]
-        parts = [(c, p) for c, p in parts if p]
+        parts = [(c, p) for c, p in parts if p and c.did not in skip]
         mine = full & k.members_of(d)
         if len(parts) == 1 and parts[0][1] == mine:
-            return self._spread(k, full, parts[0][0], depth + 1)
-        if not parts:                           # 理论上不会（mine 非空）
-            return [self._node(k, d, full, "")]
+            return self._spread(k, full, parts[0][0], depth + 1, skip=skip)
+        if not parts:                           # 正常情况下不会（mine 非空）；skip 后可能
+            return []
         out: list[dict] = []
         for c, _p in parts:
-            out.extend(self._spread(k, full, c, depth + 1))
+            # ⚠️ `skip` 必须一路传到底 —— 漏一层，被推翻的支就会在**更深**的
+            #   分叉处重新出现（判据只测了第一层 ⇒ 那种漏是全绿的）。
+            out.extend(self._spread(k, full, c, depth + 1, skip=skip))
         return out
 
     # ── ① 建议：用户打「出度」也要能匹配到 `type=出度1-3` ──────────────────
@@ -490,8 +562,12 @@ class App:
                         "只代表这里没有这个维度。要不要换一种问法，或者找真人？"}
         k = self.ensure(plugin)
         t0 = time.perf_counter()
+        # ★ `reject_below` —— 支级跳过的阈值（外部评审 C2）。**外生**：
+        #   调用方/透镜声明，系统不自己发明；`None` ⇒ 不跳（与从前逐字相同）。
+        self._reject_below = (float(spec["reject_below"])
+                              if spec.get("reject_below") is not None else None)
         with self.lock:                      # `query` 会写（expand）⇒ 串行
-            nodes, path, why, ans = self._resolve(k, req, forb)
+            nodes, path, why, ans, rej, n_lost = self._resolve(k, req, forb)
             # ── 按历史倾向排「先看哪一支」——**只改次序，不改集合** ──────────
             #   ⚠️ 这是「接入」的全部作用面：`answer_ids` / `n_answer` /
             #      `n_branches` 排序前后必须**逐字相同**（判据 `[接入] ③` 守这条）。
@@ -520,7 +596,20 @@ class App:
         #    需要截断的调用方自己传 `max_branches`，那时 `branches_shown` 会小于 `n_branches`。
         cap = int(spec.get("max_branches") or 0)
         shown = nodes[:cap] if cap > 0 else nodes
+        # ★ 反事实（2026-10-24 接线）：`impact` 为真才算「删掉这些答案，结构会怎么变」。
+        #   **只算不改**（`core/impact.removal_impact`），与入口的只读定位一致。
+        #   ⚠️ 默认**不算** —— 它是 O(方向数 × 成员数)，而默认路径的读数一个都不能动。
+        impact_doc = None
+        if spec.get("impact"):
+            # ⚠️ **绝对导入**：`entry.py` 是仓库根的顶层脚本（不是包），
+            #   `from .core import ...` 会在运行时抛
+            #   `ImportError: attempted relative import with no known parent package`
+            #   —— 接线矩阵当场判它未接线，是对的。
+            from ldv.core import impact as IM
+
+            impact_doc = IM.removal_impact(k, ans)
         return {"ok": True, "plugin": plugin,
+                "impact": impact_doc,
                 "requirement": {"require": sorted(req), "forbid": sorted(forb)},
                 # 「先看哪一支」由谁定：default = 无历史；usage = 按使用记录排的
                 # ⚠️ 它只描述**次序**，不是分数、不可跨系统比较（协议禁词那一类）
@@ -532,17 +621,32 @@ class App:
                 "node": nodes[0] if len(nodes) == 1 else None,
                 "nodes": shown,
                 "n_branches": len(nodes),
-                # ★ 三个字段让账平（外部评审 A2，2026-10-25 接上）：
-                #   截断会让 `Σ各支 ≠ n_answer`，客户端一算就以为切分漏了
-                #   （实测：31 支截成 12，3610 ≠ 7115）。给出 total/shown/hidden，
-                #   客户端验算 `shown + hidden == total`，并把断言从 `==` 放宽到 `≤`。
-                "branches_total": len(nodes),
                 "branches_shown": len(shown),
+                # ★ 三个字段让账平（外部评审 A2）：截断会让 `Σ各支 ≠ n_answer`，
+                #   客户端一算就以为切分漏了（实测：31 支截成 12，3610 ≠ 7115）。
+                #   客户端验算 `shown + hidden == total`，断言从 `==` 放宽到 `≤`。
+                "branches_total": len(nodes),
                 "branches_hidden": len(nodes) - len(shown),
+                # ★ 支级跳过的读数（外部评审 C2）—— 跳过了哪些支、因此少了哪些项，
+                #   **必须可算**：`skipped_rejected` 非空时，答案比不跳时少
+                #   `rejected_items` 项（判据守这条账）。
+                "skipped_rejected": rej,
+                "rejected_items": n_lost,
+                "reject_below": self._reject_below,
                 "path": path, "stopped": why,
                 "n_answer": len(ans),
                 "answer_ids": sorted(ans),
                 "answer_titles": [self.titles.get(i, i) for i in sorted(ans)],
+                # ★ 项级否定（外部评审 C1 的「项级」那一半）：**只标记，不改候选集** ——
+                #   判断权交给调用方（「不越权」）。来源是节点 front matter 的
+                #   `verdict`（材料自己写的）。与支级跳过（`reject_below`）分工：
+                #   项级 = 这一条被推翻（照常返回，带标记）；
+                #   支级 = 这一支被推翻（不摆出来，带差额）。
+                #   ⚠️ 只列**有标记的**项 —— 空映射与「全都没标记」不是一回事，
+                #      但也不给每个项塞一个空串（那会让每条答案都变长）。
+                "answer_verdicts": {
+                    i: v for i in sorted(ans)
+                    if (v := str((self.nodes[i].fields or {}).get("verdict") or ""))},
                 # ② 零结果时给「去掉哪个键就有结果」——逐键试一遍，确定性
                 "relax": (self._relax(req, forb) if not ans else []),
                 "ms": round(ms, 2)}
@@ -593,21 +697,46 @@ class App:
         except Exception as e:                # 一条坏不拖垮调用方
             return PROTO.error_envelope(f"{type(e).__name__}: {e}", frm=self.who())
 
-    def drill(self, did: str, req=(), forb=()) -> dict:
+    def drill(self, did: str, req=(), forb=(), *, verdict: str = "",
+              actor: str = "") -> dict:
         k = self.ensure("keyset")
         try:
             d = k.direction(did)
         except Exception as e:
             return {"ok": False, "error": f"没有这个节点 {did!r}：{e}"}
+        # ★ 负事件（外部评审 D1，2026-10-25）：`verdict="wrong"` = 「这一支被推翻」。
+        #   **判错权限与「已验证」同级 —— 只能外部授予**：`actor` 不是 `human`
+        #   一律拒（agent 只能「提议待核」）。否则 agent 会把自己读不懂的标成错的。
+        #   ⚠️ `actor` 与 `filled_by` 同款：**调用方声明，本层不验身份** ——
+        #      这里守的是「接口不发给 agent」，不是「能证明是人」。
+        outcome = 1.0
+        if verdict == "wrong":
+            if actor != "human":
+                return {"ok": False,
+                        "error": ("判错（verdict=wrong）只能外部授予："
+                                  f"actor={actor!r} 不是 human。"
+                                  "agent 可以提议，但不能判错"),
+                        "hint": "人确认后由人调用，或把这一支写进材料的 verdict 字段"}
+            outcome = -1.0
+        elif verdict and verdict != "good":
+            return {"ok": False, "error": f"verdict 只认 good / wrong，给的是 {verdict!r}"}
         # 下钻 = 「这一支有用」的唯一**真实**信号（入口没有「点赞」界面，也不合成反馈）
-        used = self._record_use(k, d)
+        used = self._record_use(k, d, outcome=outcome)
         ans = self.answer_set(frozenset(req), frozenset(forb))
+        tend = self._tendency.get(d.did) if self._tendency else None
         return {"ok": True, "parent": self._node(k, d, ans),
                 "children": [self._node(k, c, ans) for c in k.children_of(d)],
+                # ★ 这次记的是什么（负事件也要如实报，不许与「有用」共用一句话）
+                "verdict": verdict or "good",
+                "outcome": outcome,
+                "tendency_after": tend,
+                "tendency_note": ("这一支现在的倾向（含刚记的这笔）"
+                                  if tend is not None else "这一支还没有倾向读数"),
                 # 记了就报，没记就报**为什么** —— 不许静默，也不许「成功与失败共用一句话」
                 "recorded": bool((used or {}).get("written")),
                 "record_note": (
-                    f"已记录（下钻 = 有用）；这批还剩 {used.get('remaining', 0)} 支待看"
+                    (f"已记录（{'这一支被推翻' if outcome < 0 else '下钻 = 有用'}）；"
+                     f"这批还剩 {used.get('remaining', 0)} 支待看")
                     if (used or {}).get("written")
                     else (used or {}).get("why")
                     or ("未启用：内置语料不写使用记录" if self._usage_dir is None

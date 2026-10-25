@@ -1,9 +1,23 @@
 # 钉住的内核 —— 本产品不改内核，只包它。
 
-版本      v0.1.38
-提交      abb6356770020203221b4e05ec2faa4f81aa8f21
-日期      2026-10-24
+版本      v0.1.39
+提交      1d919efe6b351e5350e205b30d6016dc6b14b7f8
+日期      2026-10-25
 来源      github.com/aic-123/ldv
+
+## 本版带进来什么（为什么必须升）
+
+否定三件套在**产品路径**上闭环，插件要用：
+
+    drill(verdict="wrong", actor="human")  ⇒ outcome=-1（判错只能外部授予）
+    ask(reject_below=N)                    ⇒ 倾向 < N 且 require 不含该支 must
+                                             的支不摆出来（skipped_rejected /
+                                             rejected_items 差额可算）
+    answer_verdicts                        ⇒ 项级标记（只标记，不改候选集）
+
+顺带把之前落在本仓库的定制并回内核：`max_branches` +
+`branches_total/shown/hidden`（外部评审 A2，原来只改了 vendored 副本，
+内核没有 ⇒ 两份漂移；现在内核是超集，本仓库直接覆盖）。
 
 ⚠️ 升级内核 = 改这个文件 + 重跑本仓库的 smoke 测试 + 重跑内核自带的全套判据。
    不许「顺手跟进」—— 内核的保证矩阵、判据读数、版本落点都以它自己的提交为准。

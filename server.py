@@ -428,6 +428,12 @@ def _tool_ask(a: dict) -> dict:
     #   只截不给账，客户端会把「Σ各支 < n_answer」读成切分漏了。
     if a.get("max_branches"):
         q["max_branches"] = int(a["max_branches"])
+    # ★ 支级跳过（外部评审 C2，2026-10-25 接上）：`reject_below` = 倾向低于它就
+    #   不摆出来（人用 drill(verdict=wrong) 判错的支）。**阈值外生**（调用方声明），
+    #   不传 ⇒ 不跳。跳过必带差额（`skipped_rejected` / `rejected_items`）——
+    #   不许静默改变候选集；查询 require 含该支 must 时**不跳**（明确问到）。
+    if a.get("reject_below") is not None:
+        q["reject_below"] = float(a["reject_below"])
     r = app.query(q)
     if not r.get("ok"):
         return r
@@ -487,6 +493,10 @@ def _tool_ask(a: dict) -> dict:
     out = {"ok": True, "corpus": app.corpus_name, "actor": _actor(a),
            "session": sess_info,
            "n_answer": r.get("n_answer"),
+           # ★ 支级跳过 + 项级否定的读数（默认就给 —— 「答案少了」必须在默认路径可见）
+           "skipped_rejected": r.get("skipped_rejected") or [],
+           "rejected_items": r.get("rejected_items") or 0,
+           "answer_verdicts": r.get("answer_verdicts") or {},
            # ★ 平账三字段（默认也给）：`branches_hidden > 0` 时说明**还有支没摆出来**，
            #   调用方据此知道「不是只有这些」—— 与 items 的「还有 K 条没给」同一条规矩。
            "branches_total": r.get("branches_total"),
@@ -541,6 +551,12 @@ def _tool_ask(a: dict) -> dict:
                     "branches_shown": r.get("branches_shown"),
                     "branches_hidden": r.get("branches_hidden"),
                     "ordered_by": r.get("ordered_by"),
+                    # ★ 支级跳过的读数（外部评审 C2）：跳了哪些支、因此少了几项。
+                    #   `rejected_items > 0` 时答案比不跳时少这么多 —— 差额可算。
+                    "skipped_rejected": r.get("skipped_rejected") or [],
+                    "rejected_items": r.get("rejected_items") or 0,
+                    # ★ 项级否定（外部评审 C1）：只标记、不改候选集的项。
+                    "answer_verdicts": r.get("answer_verdicts") or {},
                     "lens": ({"id": spec.get("id"),
                               "generated_by": spec.get("generated_by"),
                               "corpus_fingerprint": spec.get("corpus_fingerprint")}
@@ -622,7 +638,17 @@ def _tool_drill(a: dict) -> dict:
             return {"ok": False,
                     "why": f"第 {a['n']} 条不在这几支里（也许这次查询没摆它）"}
         did = max(cands, key=lambda d: d.rank).did
-    d = app.drill(did, req, forb)
+    # ★ 负事件（外部评审 D1，2026-10-25）：`verdict="wrong"` = 「这一支被推翻」。
+    #   **判错只能外部授予** —— `actor` 不是 `human` 一律由内核拒
+    #   （agent 只能提议待核，否则它会把自己读不懂的标成错的）。
+    #   ⚠️ `actor` 与 `filled_by` 同款：调用方声明，服务器不验身份 ——
+    #      这里守的是「接口不发给 agent」，不是「能证明是人」。
+    d = app.drill(did, req, forb, verdict=str(a.get("verdict") or ""),
+                  actor=_actor(a))
+    # ⚠️ 内核说「不」（判错被拒 / 没有这个方向）必须**原样透出** ——
+    #   下面那个 return 写死 ok=True，会把「被拒」吞成「成功」（第一版就这样）。
+    if not d.get("ok"):
+        return {"ok": False, **{k: v for k, v in d.items() if k != "ok"}}
     # ★ 会话缓冲里把对应曝光标成 promoted（真实动作，与内核两段通道同构）
     promoted = False
     if sid:
@@ -634,6 +660,11 @@ def _tool_drill(a: dict) -> dict:
     return {"ok": True, "corpus": app.corpus_name, "did": did,
             "actor": _actor(a), "qfp": app._last_qfp,
             "session_promoted": promoted,
+            # ★ 负事件三件套（外部评审 D1）：这次记的是什么、这支现在的倾向。
+            #   ⚠️ 与「成功与失败共用一句话」同源的纪律：判错被拒时 `ok=False`
+            #      且 `error` 说清为什么（agent 不能判错）。
+            "verdict": d.get("verdict"), "outcome": d.get("outcome"),
+            "tendency_after": d.get("tendency_after"),
             "recorded": d.get("recorded"), "record_note": d.get("record_note"),
             "parent": d.get("parent"), "children": d.get("children"),
             "usage_enabled": app._usage_dir is not None and in_store}
@@ -977,6 +1008,11 @@ TOOLS = [
                                           "description": ("最多返回几支（0 = 不截，默认）。"
                                                           "截断时一并给 branches_total/shown/hidden "
                                                           "让账平 —— 别拿没给的当不存在")},
+                         "reject_below": {"type": "number",
+                                          "description": ("支级跳过的阈值（不传 = 不跳）：倾向"
+                                                          "低于它的支不摆出来。跳过必带差额"
+                                                          "（skipped_rejected / rejected_items）；"
+                                                          "require 含该支 must 时不跳")},
                          "with_body": {"type": "boolean",
                                        "description": "连正文一起返回（读内容是查询的一个选项，"
                                                       "不是单独的工具）"},
@@ -997,7 +1033,7 @@ TOOLS = [
                      "required": ["id", "fields", "body"]}},
     {"name": "drill",
      "description": "下钻一支 = 「这一支有用」。agent 代钻与人的下钻同权，"
-                    "actor 默认 agent（可声明 human）。",
+                    "actor 默认 agent（可声明 human）。verdict=wrong 只接受 human。",
      "inputSchema": {"type": "object",
                      "properties": {
                          "corpus": {"type": "string"},
@@ -1006,7 +1042,12 @@ TOOLS = [
                          "forbid": {"type": "array", "items": {"type": "string"}},
                          "actor": {"type": "string"}, "session": {"type": "string"},
                          "n": {"type": "integer",
-                               "description": "缓冲顺序编号：第 n 条有用（不必给 did；超出则回「顺序不记了」）"}},
+                               "description": "缓冲顺序编号：第 n 条有用（不必给 did；超出则回「顺序不记了」）"},
+                         "verdict": {"type": "string",
+                                     "description": ("good（默认，这一支有用）｜"
+                                                     "wrong（这一支被推翻，记 outcome=-1）"
+                                                     "—— wrong 只接受 actor=human，"
+                                                     "agent 只能提议不能判错")}},
                      "required": ["did", "require"]}},
     {"name": "derive",
      "description": "agent 敲定一个**派生维度**（词汇表里没有的轴，它自己建）—— "

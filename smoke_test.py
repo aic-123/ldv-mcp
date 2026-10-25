@@ -686,11 +686,55 @@ def main() -> int:
             f"1 万行 {t1 * 1000:.1f}ms｜10 万行 {t2 * 1000:.1f}ms"
             f"｜比值 {t2 / max(t1, 1e-9):.2f}")
 
+        # ── S36：否定闭环（外部评审 C1/C2/D1，2026-10-25）──────────────
+        # ⚠️ 必须用**新建的干净语料**：`mine` 被 S10/S16 下钻过很多次，
+        #   同一支的倾向已累计到 +8 ⇒ 一笔 -1 拉不动，读数会是「没跳」
+        #   （第一版就这样，红得让人以为跳过逻辑坏了）。干净起点才测得准。
+        neg_nodes = store / "_data" / "neg" / "nodes"
+        neg_nodes.mkdir(parents=True)
+        for f in sorted(builtin.glob("*.md")):
+            shutil.copy2(f, neg_nodes / f.name)
+        q0 = tool(c, "ask", {"corpus": "neg", "require": [], "structure": True})
+        nodes0 = q0["out"].get("nodes") or []
+        n_all = q0["out"].get("n_answer")
+        d0, must0 = nodes0[0]["did"], list(nodes0[0].get("must") or [])
+        bad = tool(c, "drill", {"corpus": "neg", "did": d0, "require": [],
+                                "verdict": "wrong", "actor": "agent"})
+        good = tool(c, "drill", {"corpus": "neg", "did": d0, "require": [],
+                                 "verdict": "wrong", "actor": "human"})
+        hit = tool(c, "ask", {"corpus": "neg", "require": [], "structure": True,
+                              "reject_below": 0.0})
+        asked = tool(c, "ask", {"corpus": "neg", "require": must0,
+                                "reject_below": 0.0})
+        dflt = tool(c, "ask", {"corpus": "neg", "require": []})
+        chk("S36a", "★ 否定闭环：agent 判错被拒、人判错记 -1（倾向当场变负）",
+            bad["out"].get("ok") is False
+            and "human" in json.dumps(bad["out"], ensure_ascii=False)
+            and good["out"].get("ok") is True
+            and good["out"].get("outcome") == -1.0
+            and (good["out"].get("tendency_after") or 0) < 0,
+            f"agent 拒={'human' in json.dumps(bad['out'], ensure_ascii=False)}"
+            f"｜outcome={good['out'].get('outcome')}"
+            f"｜tend={good['out'].get('tendency_after')}")
+        chk("S36b", "★ 否定闭环：带阈值 ⇒ 该支不摆出来，且差额可算",
+            d0 in (hit["out"].get("skipped_rejected") or [])
+            and d0 not in [n["did"] for n in (hit["out"].get("nodes") or [])]
+            and hit["out"]["n_answer"] + hit["out"]["rejected_items"] == n_all,
+            f"skipped={hit['out'].get('skipped_rejected')}"
+            f"｜{hit['out']['n_answer']}+{hit['out']['rejected_items']}=={n_all}")
+        chk("S36c", "★ 否定闭环：require 说全（含该支 must）⇒ 那支回来",
+            (asked["out"].get("skipped_rejected") or []) == [],
+            f"require={must0}｜skipped={asked['out'].get('skipped_rejected')}")
+        chk("S36d", "★ 否定闭环：不传 reject_below ⇒ 一条都不跳（默认逐字不变）",
+            (dflt["out"].get("skipped_rejected") or []) == []
+            and dflt["out"].get("n_answer") == n_all,
+            f"skipped={dflt['out'].get('skipped_rejected')}｜n_answer={dflt['out'].get('n_answer')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S35）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S36）")
     return 1 if FAIL else 0
 
 
