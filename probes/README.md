@@ -16,6 +16,7 @@
 | `metamorphic.py` | 八条蜕变关系（加/删/改/换序后答案该怎么变） | 无 |
 | `real_usage.py` | **真实轨迹**（F01–F14）+ **边缘矩阵**（E01–E26）+ 三轮确定性（D01） | 无 |
 | `cache_hit_rate.py` | **缓冲命中率三口径**（答案缓存 / 曝光 / 漏检）+ 键等价性 + 与 `orient` 对账 | 无 |
+| `agent_task.py` | **ldv 能不能当指挥**：脚本化 agent 只靠返回把一件真工作做完（认结构 → 撞失配 → 造维度 → 再查 → 写回 → 报回执），10 个决策点每个都挂得住返回字段 | `repo/_data/pypi-deps` |
 | `mcp_conformance.py` | **协议合规**（M1–M8）：用**官方 MCP SDK** 真握手 / tools-list 解析 / 调用与错误 | 官方 SDK（`pip install mcp`） |
 | `real_model.py` | **真模型**：位置扫描 / 长度扫描 / 编造率 | **DeepSeek key**（仓库外） |
 | `real_scale.py` | **长上下文 × 三种给法**（全塞 / 窄查询 / 宽 limit）对照 | **DeepSeek key**（仓库外） |
