@@ -58,3 +58,18 @@ LDV_DATA=/path/to/_data python probes/subjectivity_long.py
    `long_scenario.py` 的压缩策略）—— 改它就是改实验。要换问题就换一批、重新逐字记录。
 3. **成本类读数必须同时报「答案项数」**。踩过：窄查询返回 0 项时，错误回包的
    171 tokens 差点被读成「插件省 0.42×」—— **「没答到」会被当成「很便宜」**。
+
+## 怎么验「留档 == 现在跑出来的」
+
+```bash
+python probes/real_usage.py > /tmp/x.txt 2>&1
+diff --strip-trailing-cr probes/out/real_usage.out.txt /tmp/x.txt   # 无输出 = 一致
+```
+
+⚠️ **必须带 `--strip-trailing-cr`**（2026-10-26 实测踩到）：
+仓库里 `.gitattributes` 是 `* text=auto eol=lf` ⇒ **git 里存的是 LF**，
+而在 Windows 上重定向输出产生的是 **CRLF**。
+⇒ 直接 `diff` 会**每一行都报不同**，但那只是行尾，不是内容。
+
+实测（新 clone）：直接 `diff` 报「Files differ」，加 `--strip-trailing-cr` 后**逐字相同**。
+**所以「逐字一致」的准确说法是「除行尾外逐字一致」** —— 别把它写成「字节级相同」。
