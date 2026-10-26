@@ -995,11 +995,55 @@ def main() -> int:
             f"written={v4['out'].get('written')}"
             f"｜filled_by={v4['out'].get('filled_by')}")
 
+        # ── S43 变更回执：本会话改了哪几处（2026-10-26） ──────────────
+        # 为什么要有它：`recent_calls` 只取最近 5 行，而且**混着读操作**
+        # （orient / ask 把写稀释掉）⇒ agent 做完一串事，人看不出它动了什么。
+        # 回执只收写、按会话归属。★ S43c 是反向对照：读操作一条都不许进。
+        rd = store / "_data" / "rcpt" / "nodes"
+        rd.mkdir(parents=True, exist_ok=True)
+        for i in range(4):
+            (rd / f"r{i}.md").write_text(
+                f'---\nid: "r{i}"\ntype: 事实\n---\n\n第 {i} 条。\n',
+                encoding="utf-8", newline="\n")
+        rsid = "rcpt-1"
+        tool(c, "orient", {"corpus": "rcpt", "session": rsid})
+        tool(c, "remember", {"corpus": "rcpt", "id": "c1", "body": "一",
+                             "fields": {"type": "事实"}, "session": rsid})
+        tool(c, "remember", {"corpus": "rcpt", "id": "c2", "body": "二",
+                             "fields": {"type": "事实"}, "session": rsid})
+        # 另一个会话写的 —— **不许**混进本会话的回执
+        tool(c, "remember", {"corpus": "rcpt", "id": "zz", "body": "别人的",
+                             "fields": {"type": "事实"}, "session": "rcpt-other"})
+        tool(c, "derive", {"corpus": "rcpt", "name": "proj",
+                           "values": {"r0": "p", "r1": "q"},
+                           "rationale": "测", "derived_from": "材料",
+                           "session": rsid})
+        tool(c, "ask", {"corpus": "rcpt", "require": [], "session": rsid})
+        tool(c, "drill", {"corpus": "rcpt", "n": 1, "require": [],
+                          "session": rsid, "verdict": "wrong", "actor": "human"})
+        chg = (tool(c, "orient", {"corpus": "rcpt", "session": rsid})["out"]
+               .get("changes") or {})
+        chk("S43a", "★ 本会话的写**点得出名**，别的会话的不混进来",
+            chg.get("新写") == ["c1", "c2"],
+            f"新写={chg.get('新写')}（若含 zz ⇒ 会话归属错了）")
+        chk("S43b", "★ 造维度与**降权支**也进回执（降权算变更，不是读）",
+            chg.get("造维度") == ["proj"] and bool(chg.get("降权支")),
+            f"造维度={chg.get('造维度')}｜降权支={chg.get('降权支')}")
+        chk("S43c", "★ 反向对照：读操作（ask / orient）**一条都不进回执**"
+                    " —— 否则回执就是 recent_calls 换了个名字",
+            chg.get("合计") == 4,
+            f"合计={chg.get('合计')}（应 = 2 写 + 1 维度 + 1 降权 = 4）")
+        chg2 = (tool(c, "orient", {"corpus": "rcpt"})["out"].get("changes") or {})
+        chk("S43d", "不带 session ⇒ 汇总全部，但**明说这不是「本次」**",
+            "zz" in (chg2.get("新写") or [])
+            and "不是「本次」" in str(chg2.get("scope")),
+            f"新写={chg2.get('新写')}｜scope={chg2.get('scope')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S42）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S43）")
     return 1 if FAIL else 0
 
 

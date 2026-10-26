@@ -155,6 +155,10 @@ def _log_call(tool: str, args: dict, actor: str, summary: dict) -> None:
     CALL_LOG.parent.mkdir(parents=True, exist_ok=True)
     row = {"at": datetime.now().isoformat(timespec="seconds"),
            "tool": tool, "actor": actor,
+           # ★ 会话要**单独成列**（2026-10-26）：变更回执要按会话聚合，
+           #   而原来只有 `args.session`，写操作根本不收这个参数 ⇒ 归不了。
+           #   单独成列之后，即使某个工具将来漏了 session，也一眼看得出来（空串）。
+           "session": str(args.get("session") or ""),
            "args": {k: v for k, v in args.items() if k != "actor"},
            "summary": summary}
     try:
@@ -162,6 +166,56 @@ def _log_call(tool: str, args: dict, actor: str, summary: dict) -> None:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     except OSError:
         pass
+
+
+def _change_receipt(sid: str) -> dict:
+    """**本会话改了哪几处** —— 变更回执（2026-10-26）。
+
+    ⚠️ 与 `recent_calls` 的分工（这正是它存在的理由）：
+       `recent_calls` 只取最近 **5 行**，而且**混着读操作**（`orient` / `ask` 把写稀释掉）。
+       回执**只收写**，并按会话归属 —— 让人一眼看见 agent 动了什么，不必自己拼日志。
+
+    ⚠️ **读操作不进回执**：`orient` / `ask` 不改任何东西，混进来就是噪声。
+    ⚠️ **降权算变更**：`drill(verdict="wrong")` 改的是倾向，不是读。
+    ⚠️ 只收**成功**的写（`written` / `ok`），失败的尝试不进 ——
+       否则「写失败三次」会和「写成功一次」长得一样。
+    """
+    out: dict = {"新写": [], "造维度": [], "编译答案": [], "降权支": [],
+                 "合计": 0}
+    if not CALL_LOG.is_file():
+        return out
+    try:
+        lines = io.open(CALL_LOG, encoding="utf-8", errors="replace").readlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if sid and (row.get("session") or "") != sid:
+            continue
+        tool = row.get("tool")
+        a = row.get("args") or {}
+        sm = row.get("summary") or {}
+        if tool == "remember" and sm.get("written") is True:
+            v = a.get("id")
+            if v and v not in out["新写"]:
+                out["新写"].append(v)
+        elif tool == "derive" and sm.get("ok") is True:
+            v = a.get("name")
+            if v and v not in out["造维度"]:
+                out["造维度"].append(v)
+        elif tool == "remember_answer" and sm.get("written") is True:
+            v = sm.get("key")
+            if v and v not in out["编译答案"]:
+                out["编译答案"].append(v)
+        elif tool == "drill" and a.get("verdict") == "wrong" and sm.get("ok") is True:
+            v = sm.get("did")
+            if v and v not in out["降权支"]:
+                out["降权支"].append(v)
+    out["合计"] = sum(len(v) for k, v in out.items() if isinstance(v, list))
+    return out
 
 
 def _actor(args: dict) -> str:
@@ -462,6 +516,12 @@ def _tool_orient(a: dict) -> dict:
             except ValueError:
                 continue
     out["recent_calls"] = recent
+    # ★ 变更回执：**本会话改了哪几处**（2026-10-26）。
+    #   与 `recent_calls` 分工：那个只取 5 行且混着读操作，这个只收写、按会话归属。
+    ch = _change_receipt(sid)
+    ch["scope"] = (f"session:{sid}" if sid
+                   else "全部历史（**没带 session ⇒ 这不是「本次」**）")
+    out["changes"] = ch
     # ★ 命中率（三个口径之一，另两个在 sessions 里）—— 2026-10-26
     out["cache"] = _cache_stats(app.corpus_name)
     out["note"] = ("这是你的私人状态：语料、透镜、记得什么、最近做了什么。"
@@ -1329,7 +1389,10 @@ TOOLS = [
                                        "description": "来源标注。不传就记成你的 actor；"
                                                       "只能等于 actor（不能替别人声明）"},
                          "actor": {"type": "string",
-                                   "description": "默认 agent。声明 human 才能给「已验证」"}},
+                                   "description": "默认 agent。声明 human 才能给「已验证」"},
+                         "session": {"type": "string",
+                                     "description": "会话 id —— 带上它，这次写才会进"
+                                                    "「变更回执」（orient 的 changes）"}},
                      "required": ["id", "fields", "body"]}},
     {"name": "drill",
      "description": "下钻一支 = 「这一支有用」。agent 代钻与人的下钻同权，"
@@ -1356,6 +1419,8 @@ TOOLS = [
                      "properties": {
                          "corpus": {"type": "string"},
                          "name": {"type": "string", "description": "维度名，如 topic"},
+                         "session": {"type": "string",
+                                     "description": "会话 id —— 带上它才进变更回执"},
                          "values": {"type": "object",
                                     "description": "{节点 id: 取值}"},
                          "rationale": {"type": "string",
@@ -1381,7 +1446,9 @@ TOOLS = [
                                     "description": "要编进树的那段回答（agent 写的）"},
                          "source": {"type": "array", "items": {"type": "string"},
                                     "description": "这次回答依据哪些条目（可空）"},
-                         "actor": {"type": "string"}},
+                         "actor": {"type": "string"},
+                         "session": {"type": "string",
+                                     "description": "会话 id —— 带上它才进变更回执"}},
                      "required": ["answer"]}},
     {"name": "undo",
      "description": "反事实：删掉一个项，看答案丢什么、哪些方向少成员，然后**原样恢复**"
@@ -1472,6 +1539,11 @@ def _handle(msg: dict) -> None:
                        #   ⚠️ 老日志**没有这个字段**，统计时必须排除而不是当 False
                        #   （"没记" ≠ "没命中" —— 与「有字段 ≠ 有读数」同一类坑）。
                        "cached": bool(out.get("cached_answer")),
+                       # ★ 变更回执要按「成功/失败」分（2026-10-26）：
+                       #   `written` 区分「写成了」与「同 id 已存在被拒」，
+                       #   `key` 是 remember_answer 的身份（summary 里没有它就没法点名）。
+                       "written": out.get("written"),
+                       "key": out.get("key"),
                        "isError": not out.get("ok", True)})
             # ★ 不再返回 `structuredContent`（2026-10-25，官方 SDK 实测后删）：
             #   按 2025-06-18 规范，返回 structuredContent 的 tool **应当**声明
