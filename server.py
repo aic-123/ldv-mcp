@@ -223,6 +223,25 @@ def _actor(args: dict) -> str:
     return str(args.get("actor") or "agent")
 
 
+def _key_list(v, field: str) -> list[str]:
+    """`require` / `forbid` 必须是**字符串列表** —— 类型错要报成类型错。
+
+    ⚠️ 踩过（2026-10-26 盲测 agent）：传一个裸字符串（`require="type=事实"`），
+       `list()` 会按**字符**拆成 `['t','y','p','e','=',…]` ⇒ 报「这些键不在词汇表里」。
+       那是**误诊** —— 真实原因不是「键写错」，是「参数类型错」。
+       ⇒ 类型错当场说清，别让它伪装成内容错。
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        raise ValueError(
+            f"{field} 要传**列表**（例如 {field}=[\"type=事实\"]），不是字符串 —— "
+            "传字符串会被按字符拆开，然后报成「键不存在」，那是误诊")
+    if not isinstance(v, (list, tuple)):
+        raise ValueError(f"{field} 要是字符串列表，得到 {type(v).__name__}")
+    return [str(x) for x in v]
+
+
 #: 只有「人」有资格授予的**状态**（2026-10-26 用户定）。
 #:
 #: ⚠️ 注意这里**只有 `evidence_status`，没有 `filled_by`** —— 这是用户纠正过一次的分界：
@@ -588,8 +607,8 @@ def _tool_ask(a: dict) -> dict:
     corpus = a.get("corpus", "")
     sid = str(a.get("session") or "")
     app, in_store = _app(corpus, sid)
-    req = list(a.get("require") or [])
-    forb = list(a.get("forbid") or [])
+    req = _key_list(a.get("require"), "require")
+    forb = _key_list(a.get("forbid"), "forbid")
 
     chk = V.check_keys(app.all_keys, req, forb)
     if not chk["ok"]:
@@ -852,8 +871,8 @@ def _tool_drill(a: dict) -> dict:
     corpus = a.get("corpus", "")
     sid = str(a.get("session") or "")
     app, in_store = _app(corpus, sid)
-    req = list(a.get("require") or [])
-    forb = list(a.get("forbid") or [])
+    req = _key_list(a.get("require"), "require")
+    forb = _key_list(a.get("forbid"), "forbid")
     plugin = str(a.get("plugin") or "keyset")
     V.check_plugin(plugin)
     chk = V.check_keys(app.all_keys, req, forb)
@@ -1049,8 +1068,8 @@ def _tool_remember_answer(a: dict) -> dict:
     nodes_dir, _ = _corpus_dir(corpus)
     if nodes_dir is None:
         return {"ok": False, "why": "只在 store 里的语料上可用"}
-    req = list(a.get("require") or [])
-    forb = list(a.get("forbid") or [])
+    req = _key_list(a.get("require"), "require")
+    forb = _key_list(a.get("forbid"), "forbid")
     plugin = str(a.get("plugin") or "keyset")
     V.check_plugin(plugin)
     chk = V.check_keys(app.all_keys, req, forb)
@@ -1217,8 +1236,8 @@ def _tool_undo(a: dict) -> dict:
     corpus = a.get("corpus", "")
     app, in_store = _app(corpus)
     iid = str(a.get("id") or "").strip()
-    req = list(a.get("require") or [])
-    forb = list(a.get("forbid") or [])
+    req = _key_list(a.get("require"), "require")
+    forb = _key_list(a.get("forbid"), "forbid")
     # ★ 句柄：agent 说「第 n 条」，id 从本地表换回来（2026-10-24）
     if not iid and a.get("n") is not None:
         nodes_dir, _ = _corpus_dir(corpus)
@@ -1246,8 +1265,8 @@ def _tool_undo(a: dict) -> dict:
         raise S.SpecError(f"语料里没有这一项：{iid}")
     plugin = str(a.get("plugin") or "keyset")
     V.check_plugin(plugin)
-    req = list(a.get("require") or [])
-    forb = list(a.get("forbid") or [])
+    req = _key_list(a.get("require"), "require")
+    forb = _key_list(a.get("forbid"), "forbid")
     chk = V.check_keys(app.all_keys, req, forb)
     if not chk["ok"]:
         return {"ok": False, "out_of_structure": True, **chk}

@@ -1073,11 +1073,27 @@ def main() -> int:
             dp.get("proj") == MARK,
             f"写入 {MARK}｜报出 {dp.get('proj')}")
 
+        # ── S45 类型错要报成类型错（2026-10-26 盲测 agent 踩出来的）────────
+        # 传裸字符串 `require="type=事实"` ⇒ `list()` 按**字符**拆开 ⇒
+        # 报「这些键不在词汇表里」——那是**误诊**：真实原因是参数类型错。
+        bad = tool(c, "ask", {"corpus": "dmeta", "require": "type=事实"})
+        badtxt = json.dumps(bad["out"], ensure_ascii=False)
+        chk("S45a", "★ `require` 传字符串 ⇒ 报「要传列表」，**不是**「键不在词汇表」",
+            ("要传**列表**" in badtxt or "要传列表" in badtxt)
+            and "不在词汇表" not in badtxt,
+            f"返回={badtxt[:120]}")
+        good = tool(c, "ask", {"corpus": "dmeta", "require": ["type=事实"]})
+        chk("S45b", "★ 反向对照：传列表 ⇒ 正常（类型检查不许误伤）",
+            good["out"].get("ok") is True
+            and good["out"].get("out_of_structure") in (None, False),
+            f"ok={good['out'].get('ok')}"
+            f"｜n_answer={good['out'].get('n_answer')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S44）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S45）")
     return 1 if FAIL else 0
 
 
