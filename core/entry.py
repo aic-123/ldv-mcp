@@ -136,6 +136,13 @@ class App:
         #   ⚠️ **不写回材料**：`_data/*` 是所有语料基线的输入，往节点里加字段会让
         #      键集变 ⇒ 树变 ⇒ 所有基线一起漂。派生量只在这一层叠加，删文件即回到原状。
         self.derived: dict[str, str] = {}
+        # ★ 派生维度的 `_meta` 也**读出来**（2026-10-26）。
+        #   原来这里只取 `_meta["field"]`，于是 `derive` 强制要求的
+        #   `rationale` / `derived_from` 写进 sidecar 后**没有任何读取路径** ——
+        #   `derive` 的 docstring 说「`derived_from` 决定答案里敢不敢把它当事实」，
+        #   而代码从没读过它：**收了税没修路**。
+        #   ⚠️ 这里只**读出来**，不参与任何判断（判据 `S44` 守「原样透传」）。
+        self.derived_meta: dict[str, dict] = {}
         # ⚠️ `find_corpus()` 对**内置语料**返回 `nodes/`，对**外部语料**返回语料根
         #    ⇒ 不能一律 `.parent`（2026-10-23 实测：外部语料的 sidecar 会去
         #    `_data/derived` 找，**永远找不到且静默跳过** ⇒ 派生维度对外部语料全失效）。
@@ -155,6 +162,10 @@ class App:
                             set(self.nodes[nid].keys) | {f"{field}={v}"})
                         hit += 1
                 self.derived[field] = f"{hit} 项（{f.name}）"
+                # `_meta` 原样留着（含 what / why / derived_from / generated_by /
+                # derived_at）。`file` 是补的：调用方要知道是哪份 sidecar。
+                self.derived_meta[field] = dict(doc.get("_meta") or {},
+                                                file=f.name)
         # 只建 keyset；reach 按需（实测：3783 项把 reach 也建了 ⇒ 启动 333 s → 3.6 s）
         self.kernels: dict[str, object] = {}
         self.kernels["keyset"] = build_keyset(self.nodes)[0]

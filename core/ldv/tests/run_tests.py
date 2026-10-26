@@ -10150,6 +10150,162 @@ def test_usage_snapshot() -> None:
         _sh.rmtree(tmp, ignore_errors=True)
 
 
+def test_negation() -> None:
+    """★ [否定] 项级标记 + 支级跳过 + 负事件（外部评审 C1 / C2 / D1，2026-10-25）。
+
+    分工（用户定的）：**项级只标记、不改候选集**（判断权交给调用方）；
+    **支级才跳过**（这是唯一能省成本的地方），且跳过必带**差额**。
+
+    七条，其中 ⑤ 是**反向对照**（关掉跳过 ⇒ 读数必须空）：
+
+        ① 默认不跳：不传 `reject_below` ⇒ 与从前**逐字相同**（nodes/answer_ids）
+        ② 负事件的权限：`actor != human` 判错 ⇒ 拒；人 ⇒ outcome = -1 且倾向变负
+        ③ 带阈值 ⇒ 被推翻的支不摆出来，`skipped_rejected` 非空
+        ④ 账平：`n_answer + rejected_items == 不跳时的 n_answer`（差额可算）
+        ⑤ **反向对照**：`_rejected_dirs` 打成返回空 ⇒ 带阈值也**必须** `skipped` 空
+           （否则 ③④ 读的是同一个来源，判据是空转）
+        ⑥ 明确问到不跳：`require ⊇ 该支 must` ⇒ `skipped_rejected` 空
+        ⑦ 项级标记：`answer_verdicts` 只列有标记的项，且 `n_answer` **不变**
+
+    ⚠️ 造语料走 `LDV_CORPUS` + `_data/<名>/nodes`（外部语料形态）——
+      内置语料不启用 usage，负事件无处可记。
+    """
+    import os as _os
+    import shutil as _sh
+    import tempfile as _tf
+
+    import entry as E
+    from ldv.checks._fixtures import find_corpus
+
+    builtin = find_corpus()
+    if builtin is None:
+        ok("★ [否定] 七条（**跳过**：内置语料不在）", True, "0")
+        return
+    tmp = Path(_tf.mkdtemp(prefix="ldv-neg-"))
+    saved_env = _os.environ.get("LDV_CORPUS")
+    try:
+        nodes = tmp / "_data" / "neg" / "nodes"
+        nodes.mkdir(parents=True)
+        for f in sorted(builtin.glob("*.md")):
+            _sh.copy2(f, nodes / f.name)
+        _os.environ["LDV_CORPUS"] = str(nodes)
+        app = E.App(None)
+
+        base = app.query({"require": []})
+        n_all = base["n_answer"]
+        dids = [n["did"] for n in base["nodes"]]
+        again = app.query({"require": []})
+        ok("★ [否定] ① 默认不跳：不传 reject_below ⇒ 与从前逐字相同",
+           (again["nodes"], again["answer_ids"], again["n_answer"],
+            again["skipped_rejected"])
+           == (base["nodes"], base["answer_ids"], n_all, []),
+           f"skipped={again['skipped_rejected']}｜reject_below={again['reject_below']}")
+
+        d0 = dids[0]
+        app.query({"require": []})
+        bad = app.drill(d0, [], verdict="wrong", actor="agent")
+        ok("★ [否定] ②-a 判错只能外部授予：actor=agent ⇒ 拒",
+           bad.get("ok") is False and "human" in str(bad.get("error", "")),
+           str(bad.get("error", ""))[:60])
+        good = app.drill(d0, [], verdict="wrong", actor="human")
+        ok("★ [否定] ②-b 人判错 ⇒ outcome=-1 且倾向当场变负",
+           good.get("ok") is True and good.get("outcome") == -1.0
+           and (good.get("tendency_after") or 0) < 0
+           and good.get("recorded") is True,
+           f"outcome={good.get('outcome')}｜tend={good.get('tendency_after')}"
+           f"｜记={good.get('recorded')}")
+
+        hit = app.query({"require": [], "reject_below": 0.0})
+        ok("★ [否定] ③ 带阈值 ⇒ 被推翻的支不摆出来（skipped 非空）",
+           d0 in hit["skipped_rejected"] and d0 not in
+           [n["did"] for n in hit["nodes"]],
+           f"skipped={hit['skipped_rejected']}｜支数 {len(dids)}→{len(hit['nodes'])}")
+        # ③-b **静态断言**：`skip` 必须一路传到底。漏一层 ⇒ 被推翻的支会在**更深**
+        #   的分叉处重新出现，而上面的动态判据只覆盖第一层（那种漏是全绿的）。
+        #   ⇒ 读源码：`self._spread(` 的每个调用点都必须带 `skip=`。
+        import io as _io
+        import re as _re
+        src = _io.open(E.__file__, encoding="utf-8").read()
+        calls = _re.findall(r"self\._spread\([^)]*\)", src)
+        ok("★ [否定] ③-b `_spread` 的每个调用点都带 `skip=`（防漏传）",
+           bool(calls) and all("skip=" in c for c in calls),
+           f"{len(calls)} 个调用点：" + "｜".join(c[:34] for c in calls))
+        ok("★ [否定] ④ 账平：n_answer + rejected_items == 不跳时的 n_answer",
+           hit["n_answer"] + hit["rejected_items"] == n_all,
+           f"{hit['n_answer']} + {hit['rejected_items']} == {n_all}")
+
+        # ⑤ 反向对照：把判定整个关掉 ⇒ 同样的查询必须一条都不跳
+        orig = E.App._rejected_dirs
+        E.App._rejected_dirs = lambda self, k, req: (set(), set())
+        try:
+            off = app.query({"require": [], "reject_below": 0.0})
+        finally:
+            E.App._rejected_dirs = orig
+        ok("★ [否定] ⑤ §S7 **反向对照**：关掉跳过 ⇒ 同样的查询一条都不跳",
+           off["skipped_rejected"] == [] and off["n_answer"] == n_all,
+           f"skipped={off['skipped_rejected']}｜n_answer={off['n_answer']}")
+
+        # ⑥ 明确问到：require ⊇ 该支 must ⇒ 不跳
+        k = app.kernels["keyset"]
+        pl = k.direction(d0).payload
+        must = sorted(pl[0]) if isinstance(pl, tuple) and len(pl) == 2 else sorted(pl)
+        asked = app.query({"require": must, "reject_below": 0.0})
+        ok("★ [否定] ⑥ 明确问到（require ⊇ must）⇒ 不跳",
+           asked["skipped_rejected"] == [],
+           f"require={must}｜skipped={asked['skipped_rejected']}")
+
+        # ⑦ 项级标记：只标记，不改候选集
+        one = sorted(nodes.glob("*.md"))[0]
+        raw = one.read_text(encoding="utf-8")
+        one.write_text(raw.replace("---\n", "---\nverdict: 否定\n", 1),
+                       encoding="utf-8", newline="\n")
+        try:
+            app2 = E.App(None)
+            marked = app2.query({"require": []})
+            ok("★ [否定] ⑦ 项级标记只列有标记的项，且 n_answer 不变",
+               marked["answer_verdicts"] and marked["n_answer"] == n_all
+               and all(v for v in marked["answer_verdicts"].values()),
+               f"标记 {len(marked['answer_verdicts'])} 项｜n_answer={marked['n_answer']}")
+        finally:
+            one.write_text(raw, encoding="utf-8", newline="\n")
+
+        # ⑧ 点号字段的两种写法**必须等价**（真实流程探针 E02 挖出来的）
+        #   平铺 `source.kind: x` 与嵌套 `source:\n  kind: x` 若只支持一种，
+        #   同一语义就会出现「一种写法能按值查、另一种报未知键」。
+        from ldv.corpus.loader import keys_of as _keys_of
+        flat = _keys_of({"source.kind": "论文", "type": "立场"})
+        nest = _keys_of({"source": {"kind": "论文"}, "type": "立场"})
+        ok("★ [否定] ⑧ 点号字段两种写法等价（平铺 / 嵌套都产 `source.kind=论文`）",
+           "source.kind=论文" in flat and "source.kind=论文" in nest,
+           f"平铺 {sorted(flat)}｜嵌套 {sorted(nest)}")
+
+        # ⑨ **空语料是合法的**（2026-10-25 用户定）—— 空库不该靠一个占位文件才能起来。
+        #   两条都要：空目录能 load 成 0 项；**目录不存在仍然报错**（两者分得开）。
+        import tempfile as _tf2
+        from ldv.corpus.loader import CorpusError as _CE
+        from ldv.corpus.loader import load_nodes as _load_nodes
+        empty_dir = Path(_tf2.mkdtemp(prefix="ldv-empty-"))
+        try:
+            got = _load_nodes(empty_dir)
+            missing_raised = False
+            try:
+                _load_nodes(empty_dir / "没有这个子目录")
+            except _CE:
+                missing_raised = True
+            ok("★ [否定] ⑨ 空语料合法（0 项），且与「目录不存在」分得开",
+               got == {} and missing_raised,
+               f"空目录 ⇒ {len(got)} 项｜不存在的目录 ⇒ "
+               f"{'报错' if missing_raised else '**没报错（分不开）**'}")
+        finally:
+            _sh.rmtree(empty_dir, ignore_errors=True)
+    finally:
+        if saved_env is None:
+            _os.environ.pop("LDV_CORPUS", None)
+        else:
+            _os.environ["LDV_CORPUS"] = saved_env
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
 def test_forgetting() -> None:
     """★ [遗忘] 两层记忆：短期显性（缓冲，容量淘汰）+ 长期隐性（正式，降权不删）。
 
@@ -10572,7 +10728,14 @@ def test_no_unsourced_strings() -> None:
     #    否则「偷偷生成一句话」和「加了个提示」长得一样。
     fixed_prefix = ("这些键", "不认识的", "没有插件", "没有这个节点",
                     "已经是最细", "已经到底", "停在了",
-                    "这个问题")          # ← `out_of_structure_note`（2026-10-22 新增）
+                    "这个问题",          # ← `out_of_structure_note`（2026-10-22 新增）
+                    # 2026-10-25：`_resolve` 的停因说明（**代码写的模板，数字来自数据**）。
+                    #   ⚠️ 这两句以前**从没出口过**——旧代码第三位返回字面量 "split"，
+                    #      `why` 是死变量。今天把 `why` 接上（比 "split" 信息量大），
+                    #      §S1 当场抓到 ⇒ 按规矩显式进白名单。
+                    "答案横跨",
+                    # 2026-10-25：支级跳过后的空结果说明（外部评审 C2）
+                    "满足约束的项")
 
     # ⚠️ **只查值，不查键** —— 键是协议（代码写的字段名：`rank` / `n_members` / `must`…），
     #    值是数据（应来自材料）。第一版连键一起查 ⇒ 报 139 个「无出处」，全是字段名。
@@ -10800,7 +10963,7 @@ def main() -> int:
                test_never_judged, test_b17_cyclic_corpus,
                test_skip_evidence_table, test_self_corpus,
                test_growth_autonomy, test_usage_wiring, test_usage_snapshot,
-               test_forgetting,
+               test_forgetting, test_negation,
                test_motivation, test_no_unsourced_strings,
                test_out_of_structure, test_verified_external_only):
         # ★ **兜底：外部语料不在 ⇒ 跳过该函数，不崩**（2026-10-19 修 CI）

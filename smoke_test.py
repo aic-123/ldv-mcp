@@ -1039,11 +1039,45 @@ def main() -> int:
             and "不是「本次」" in str(chg2.get("scope")),
             f"新写={chg2.get('新写')}｜scope={chg2.get('scope')}")
 
+        # ── S44 派生维度的 `_meta` 必须**读得出来**（2026-10-26） ────────
+        # 缺口原状：`entry.py` 加载 sidecar 时只取 `_meta["field"]` 与 `values`
+        # ⇒ `derive` 强制要求的 `rationale` / `derived_from` 写进去后**没人读**。
+        # `derive` 的 docstring 说「`derived_from` 决定答案里敢不敢把它当事实」，
+        # 而代码从没读过它 —— **收了税没修路**。
+        # ★ S44c 用一条**自定义字符串**做反向对照：硬编码「原材料」也会过 a/b，
+        #   但过不了「传什么就报什么」。
+        dv = store / "_data" / "dmeta" / "nodes"
+        dv.mkdir(parents=True, exist_ok=True)
+        for i in range(4):
+            (dv / f"m{i}.md").write_text(
+                f'---\nid: "m{i}"\ntype: 事实\n---\n\n第 {i} 条。\n',
+                encoding="utf-8", newline="\n")
+        MARK = "测-原材料-abc"          # 故意长得不像任何内置值
+        tool(c, "derive", {"corpus": "dmeta", "name": "proj",
+                           "values": {"m0": "p", "m1": "p", "m2": "q"},
+                           "rationale": "按项目分得开：p/q 两簇",
+                           "derived_from": MARK, "what": "项目归属"})
+        dm = (tool(c, "orient", {"corpus": "dmeta"})["out"].get("derived_meta") or {})
+        chk("S44a", "★ `orient.derived_meta` 把 `derive` 必填的那些**读出来**了",
+            bool(dm.get("proj"))
+            and dm["proj"].get("why") == "按项目分得开：p/q 两簇"
+            and dm["proj"].get("what") == "项目归属"
+            and dm["proj"].get("generated_by") == "agent",
+            f"derived_meta.proj={json.dumps(dm.get('proj'), ensure_ascii=False)[:110]}")
+        dp = (tool(c, "ask", {"corpus": "dmeta", "require": ["proj=p"]})["out"]
+              .get("derived_provenance") or {})
+        chk("S44b", "★ `ask` 对**用到的**派生维度给出 `derived_from`（**只这一个值**）",
+            dp.get("proj") == MARK,
+            f"derived_provenance={json.dumps(dp, ensure_ascii=False)[:110]}")
+        chk("S44c", "★ 反向对照：**传什么就报什么**（不是硬编码「原材料」）",
+            dp.get("proj") == MARK,
+            f"写入 {MARK}｜报出 {dp.get('proj')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S43）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S44）")
     return 1 if FAIL else 0
 
 

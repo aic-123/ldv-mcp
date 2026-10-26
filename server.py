@@ -489,6 +489,11 @@ def _tool_orient(a: dict) -> dict:
     if nodes is not None:
         st = S.status(_spec_dir(corpus), nodes)
         out["derived"] = dict(app.derived or {})   # agent 敲定的派生维度（field → N 项）
+        # ★ 派生维度的**元数据**也报（2026-10-26）：`derive` 强制要求
+        #   `rationale` / `derived_from`，原来它们写进 sidecar 后没人读 ——
+        #   「这一栏决定答案里敢不敢把它当事实」这句话当时没有代码兑现。
+        #   这里原样透传，不加工、不判断（判据 `S44` 守这一点）。
+        out["derived_meta"] = dict(getattr(app, "derived_meta", {}) or {})
         out["lens"] = {"frozen": st.get("frozen"), "id": st.get("id"),
                        "generated_by": st.get("generated_by"),
                        "rationale": st.get("rationale"),
@@ -730,8 +735,21 @@ def _tool_ask(a: dict) -> dict:
                     "**多条同时能回答时，把它们都列出来** —— 不许挑一条当真的"),
            "query": {"require": req, "forbid": forb, "plugin": plugin or "keyset"},
            "derived_used": derived_used,
+           # ★ 每个用到的派生维度**从哪来**（2026-10-26）：`derived_note` 原来只会
+           #   笼统说「当线索用，别当事实」—— 而 `derived_from` 里早就写着
+           #   「原材料」还是「模型推断」，这两者该不该当事实**完全不同**。
+           #   ⚠️ **只给 `derived_from` 一个值**：完整 `_meta`（what/why/generated_by/
+           #      derived_at/file）在 `orient.derived_meta` 里，那是**一次一调**的地方。
+           #      第一版在这里塞了整份 `_meta` ⇒ 4 问多 266 tokens（实测），
+           #      而判断「敢不敢当事实」只需要这一个字段。
+           "derived_provenance": {
+               f: ((getattr(app, "derived_meta", {}) or {}).get(f) or {})
+                  .get("derived_from")
+               for f in sorted({k.split("=", 1)[0] for k in derived_used})},
            "derived_note": ("本次用到的维度里，这些是 **agent 派生的**"
-                            "（不是材料里写的）—— 当线索用，别当事实"
+                            "（不是材料里写的）—— 看 `derived_provenance` 的 "
+                            "`derived_from`：写「原材料」的可当材料，写「模型推断」的"
+                            "只能当线索"
                             if derived_used else ""),
            "provenance": _provenance(app, r.get("answer_ids") or []),
            "usage_enabled": app._usage_dir is not None and in_store}
