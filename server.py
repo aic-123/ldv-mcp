@@ -169,6 +169,49 @@ def _actor(args: dict) -> str:
     return str(args.get("actor") or "agent")
 
 
+def _cache_stats(corpus: str) -> dict:
+    """「命中率」有三个口径 —— 分开报，混着说就是含糊（2026-10-26 用户要的）。
+
+    | 口径 | 算法 | 它回答什么 |
+    |---|---|---|
+    | **答案缓存命中率** | 命中数 / `ask` 数 | 省了多少次问 agent |
+    | **缓冲曝光命中率** | `promoted` / 摆出的支数 | 摆出来的支多少**被证明有用** |
+    | **漏检率** | 重新提到 / 挤出数 | 会话缓冲挤错了多少 |
+
+    前两个从 `log/mcp-calls.jsonl` 算，第三个在 `sessions` 里（不重复算）。
+
+    ⚠️ **老日志没有 `cached` 字段 ⇒ 只统计有该字段的行。**
+       拿「没记」当「没命中」会把命中率算低 —— 与「有字段 ≠ 有读数」同一类坑。
+    ⚠️ **它是复用率，不是智能指标**：命中率完全取决于**问题重复率**
+       （同一问两遍 = 100%，每问都不同 = 0%）。别拿它当能力读数。
+    """
+    asks = hits = 0
+    if CALL_LOG.is_file():
+        try:
+            for line in io.open(CALL_LOG, encoding="utf-8", errors="replace"):
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("tool") != "ask":
+                    continue
+                a = row.get("args") or {}
+                if corpus and a.get("corpus") != corpus:
+                    continue
+                s = row.get("summary") or {}
+                if "cached" not in s:
+                    continue                     # 老日志：不记 ≠ 没命中
+                asks += 1
+                if s.get("cached"):
+                    hits += 1
+        except OSError:
+            pass
+    return {"ask 数": asks, "命中数": hits,
+            "答案缓存命中率": (round(hits / asks, 3) if asks else None),
+            "note": ("命中率 = 命中 / ask。**None = 还没有带 `cached` 字段的 ask**"
+                     "（不是 0，老日志不计）。这是**复用率**，取决于问题重复率")}
+
+
 def _provenance(app, answer_ids) -> dict:
     """答案的**出处摘要** —— 三类分开数，不藏混合物。
 
@@ -375,6 +418,8 @@ def _tool_orient(a: dict) -> dict:
             except ValueError:
                 continue
     out["recent_calls"] = recent
+    # ★ 命中率（三个口径之一，另两个在 sessions 里）—— 2026-10-26
+    out["cache"] = _cache_stats(app.corpus_name)
     out["note"] = ("这是你的私人状态：语料、透镜、记得什么、最近做了什么。"
                    "真人不需要看它 —— 但你可以随时把它讲给人听")
     return out
@@ -1366,6 +1411,11 @@ def _handle(msg: dict) -> None:
                       {"ok": out.get("ok"), "n_answer": out.get("n_answer"),
                        "n_branches": out.get("n_branches"),
                        "qfp": out.get("qfp"), "did": out.get("did"),
+                       # ★ 缓存命中要进日志，否则**算不出命中率**（2026-10-26）。
+                       #   `cached_answer` 只在命中时出现 ⇒ True / False 两态够用；
+                       #   ⚠️ 老日志**没有这个字段**，统计时必须排除而不是当 False
+                       #   （"没记" ≠ "没命中" —— 与「有字段 ≠ 有读数」同一类坑）。
+                       "cached": bool(out.get("cached_answer")),
                        "isError": not out.get("ok", True)})
             # ★ 不再返回 `structuredContent`（2026-10-25，官方 SDK 实测后删）：
             #   按 2025-06-18 规范，返回 structuredContent 的 tool **应当**声明

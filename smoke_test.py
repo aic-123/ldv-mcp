@@ -903,11 +903,49 @@ def main() -> int:
             f"｜n_answer={lm['out'].get('n_answer')}"
             f"｜note={str(lm['out'].get('items_note'))[:50]}")
 
+        # ── S41 缓冲命中率：读数必须算得对，且「没记」≠「没命中」 ──────
+        # 2026-10-26 用户要「缓冲命中率」时才发现：有 `from_cache` 字段，
+        # 但**没有聚合读数**（有字段 ≠ 有读数，第三次踩）。
+        # 现在 `orient.cache` 从日志算；这里守三件事，重点是 b：
+        # 老日志没有 `cached` 字段，拿它当「没命中」会把命中率算低。
+        (store / "_data" / "hit" / "nodes").mkdir(parents=True, exist_ok=True)
+        (store / "_data" / "hit" / "nodes" / "h1.md").write_text(
+            '---\nid: "h1"\ntype: 事实\n---\n\n一条。\n',
+            encoding="utf-8", newline="\n")
+        c0 = tool(c, "orient", {"corpus": "hit"})
+        chk("S41a", "一次都没问 ⇒ 命中率是 **None**（不是 0）",
+            (c0["out"].get("cache") or {}).get("答案缓存命中率") is None
+            and (c0["out"].get("cache") or {}).get("ask 数") == 0,
+            f"cache={ {k: v for k, v in (c0['out'].get('cache') or {}).items() if k != 'note'} }")
+        tool(c, "ask", {"corpus": "hit", "require": ["type=事实"]})
+        tool(c, "remember_answer", {"corpus": "hit", "require": ["type=事实"],
+                                    "answer": "答一。", "source": ["h1"]})
+        tool(c, "ask", {"corpus": "hit", "require": ["type=事实"]})
+        c1 = (tool(c, "orient", {"corpus": "hit"})["out"].get("cache") or {})
+        chk("S41b", "★ 问了 2 次、命中 1 次 ⇒ 报 ask=2 命中=1 率=0.5",
+            c1.get("ask 数") == 2 and c1.get("命中数") == 1
+            and c1.get("答案缓存命中率") == 0.5,
+            f"ask={c1.get('ask 数')}｜命中={c1.get('命中数')}"
+            f"｜率={c1.get('答案缓存命中率')}")
+        # ★ 反向对照：往日志里塞一条**老格式**（没有 cached 字段）的 ask
+        logp = store / "log" / "mcp-calls.jsonl"
+        with io.open(logp, "a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps({"at": "2026-01-01T00:00:00", "tool": "ask",
+                                "actor": "agent",
+                                "args": {"corpus": "hit", "require": []},
+                                "summary": {"ok": True, "n_answer": 0}},
+                               ensure_ascii=False) + "\n")
+        c2 = (tool(c, "orient", {"corpus": "hit"})["out"].get("cache") or {})
+        chk("S41c", "★ 老日志没 `cached` 字段 ⇒ **不计入分母**（没记 ≠ 没命中）",
+            c2.get("ask 数") == 2 and c2.get("答案缓存命中率") == 0.5,
+            f"塞一条老格式后：ask={c2.get('ask 数')}"
+            f"｜率={c2.get('答案缓存命中率')}（若算成 3 次 ⇒ 率被压低）")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S40）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S41）")
     return 1 if FAIL else 0
 
 
