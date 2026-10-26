@@ -941,11 +941,56 @@ def main() -> int:
             f"塞一条老格式后：ask={c2.get('ask 数')}"
             f"｜率={c2.get('答案缓存命中率')}（若算成 3 次 ⇒ 率被压低）")
 
+        # ── S42 资格闸：agent 没资格回报「已验证」/「我写的」 ────────────
+        # 2026-10-26 实测挖到的洞：`remember(fields={"evidence_status":"已验证"})`
+        # 和 `remember(filled_by="human")` 都能写成，出处分桶与「已验证」那条红线
+        # 同时失效。而**已有判据只扫系统源码**（证明「系统不会自己写」），
+        # 走 `fields` 数据通道时源码里没有那个字面量 ⇒ 判据照样绿。
+        # 这一组补的正是那一半：**走数据通道**喂进去，必须红。
+        qd = store / "_data" / "qual" / "nodes"
+        qd.mkdir(parents=True, exist_ok=True)
+        (qd / "q1.md").write_text('---\nid: "q1"\ntype: 事实\n---\n\n一条。\n',
+                                  encoding="utf-8", newline="\n")
+        v1 = tool(c, "remember", {"corpus": "qual", "id": "fake1", "body": "x",
+                                  "fields": {"type": "事实",
+                                             "evidence_status": "已验证"}})
+        chk("S42a", "★ agent 声称「已验证」⇒ 拒，且**一个字节都没落盘**",
+            (v1["out"].get("ok") is False or "_raw" in v1["out"])
+            and "没资格" in json.dumps(v1["out"], ensure_ascii=False)
+            and not (qd / "fake1.md").exists(),
+            f"ok={v1['out'].get('ok')}｜落盘={(qd / 'fake1.md').exists()}")
+        v2 = tool(c, "remember", {"corpus": "qual", "id": "fake2", "body": "x",
+                                  "fields": {"type": "事实"}, "filled_by": "human"})
+        chk("S42b", "★ agent 声称 `filled_by=human` ⇒ 拒（不能替人写「我写的」）",
+            (v2["out"].get("ok") is False or "_raw" in v2["out"])
+            and not (qd / "fake2.md").exists(),
+            f"ok={v2['out'].get('ok')}｜落盘={(qd / 'fake2.md').exists()}")
+        # ★ 反向对照：闸不能把人一起拦死 —— actor=human 必须写得进去
+        v3 = tool(c, "remember", {"corpus": "qual", "id": "real1", "body": "x",
+                                  "fields": {"type": "事实",
+                                             "evidence_status": "已验证"},
+                                  "actor": "human"})
+        chk("S42c", "★ 反向对照：`actor=human` 声称「已验证」⇒ **接受**"
+                    "（只拦没资格的人，不拦有资格的）",
+            v3["out"].get("written") is True
+            and (qd / "real1.md").is_file()
+            and "已验证" in (qd / "real1.md").read_text(encoding="utf-8"),
+            f"written={v3['out'].get('written')}｜落盘={(qd / 'real1.md').exists()}")
+        # ★ 也不能拦正常写：agent 写「未验证」必须允许（否则闸做过头了）
+        v4 = tool(c, "remember", {"corpus": "qual", "id": "ok1", "body": "x",
+                                  "fields": {"type": "事实",
+                                             "evidence_status": "未验证"}})
+        chk("S42d", "★ 闸不许做过头：agent 写「未验证」⇒ 允许",
+            v4["out"].get("written") is True
+            and v4["out"].get("filled_by") == "agent",
+            f"written={v4['out'].get('written')}"
+            f"｜filled_by={v4['out'].get('filled_by')}")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S41）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S42）")
     return 1 if FAIL else 0
 
 
