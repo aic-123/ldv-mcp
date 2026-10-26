@@ -792,6 +792,7 @@ def _tool_ask(a: dict) -> dict:
         cached, why = _cache_lookup(app, nodes_dir, req, forb,
                                     plugin or "keyset")
         if cached:
+            _unk = bool(cached.get("unknown"))
             out["cached_answer"] = {
                 "from_cache": True, "answer": cached.get("answer"),
                 "filled_by": cached.get("filled_by"),
@@ -799,8 +800,16 @@ def _tool_ask(a: dict) -> dict:
                 "derived_from": cached.get("derived_from"),
                 "source": cached.get("source") or [],
                 "key": cached.get("qfp"),
-                "note": ("这是**上次编进树的回答**，不是新材料 —— "
-                         "要更新就重新 remember_answer（同键覆写）")}
+                # ★ 弃答要**单独一栏**（2026-10-26）：否则调用方会把
+                #   「上次判定这条问不出」当成一个答案来用。
+                "unknown": _unk,
+                "why": cached.get("why") or "",
+                "note": (("★ 这是**上次的弃答判定**，不是答案：当时认定这条问不出，"
+                          f"理由是「{cached.get('why')}」。"
+                          "**别把它当结论** —— 材料若补上了就重新问、重新 remember_answer")
+                         if _unk else
+                         ("这是**上次编进树的回答**，不是新材料 —— "
+                          "要更新就重新 remember_answer（同键覆写）"))}
         elif why:
             out["cache_note"] = why
     if a.get("structure"):
@@ -1076,8 +1085,21 @@ def _tool_remember_answer(a: dict) -> dict:
     if not chk["ok"]:
         return {"ok": False, "out_of_structure": True, **chk}
     answer = str(a.get("answer") or "").strip()
-    if not answer:
-        raise ValueError("缺 answer —— 要编进树的那段回答")
+    # ★ 「报告不知道」是一条**正式出口**（2026-10-26）。
+    #   原来 agent 只有两条路：给个答案，或者沉默 —— 沉默在结构里不留痕，
+    #   于是它倾向于「编一个」。有了这条出口，弃答才能**被记录、被复核、被查询**。
+    #   ⚠️ `why` 必填：不说清「缺什么」的弃答是「哑」，不是「弃答」，两者必须分得开。
+    unknown = bool(a.get("unknown"))
+    why = str(a.get("why") or "").strip()
+    if unknown:
+        if not why:
+            raise ValueError(
+                "unknown=true 必须给 why —— 「不知道」也要说清**缺什么**"
+                "（缺哪个字段 / 哪个维度 / 哪一段），否则那是「哑」不是「弃答」")
+        answer = answer or "（无支撑：材料里没有能回答这个问题的东西）"
+    elif not answer:
+        raise ValueError("缺 answer —— 要编进树的那段回答；"
+                         "**若确实答不出，用 unknown=true + why**（那也是一条结论）")
     src = [str(x) for x in (a.get("source") or [])]
     for s in src:
         if s not in app.nodes:
@@ -1096,10 +1118,14 @@ def _tool_remember_answer(a: dict) -> dict:
     #     `source` 指回材料。于是「我上个月对这个答过什么」变成一条可查的项。
     #   ⚠️ **同键再答不覆写**（覆写就是改写自己的记忆）⇒ 写新版本 `-2`/`-3`，
     #      历史留着 —— 「我改过想法」本身是反思的材料。
-    node_id = _write_self_node(nodes_dir, key, req, forb, answer, src, a)
+    node_id = _write_self_node(nodes_dir, key, req, forb, answer, src, a,
+                               unknown=unknown, why=why)
     doc = {"qfp": key, "corpus_fp": fp, "plugin": plugin,
            "require": sorted(req), "forbid": sorted(forb),
            "answer": answer, "source": src,
+           # ★ 弃答是一种**结论状态**，不是「答案文本里写着不知道」（2026-10-26）。
+           #   命中时单独一栏报出来 —— 否则调用方会把「上次判定答不出」当成答案。
+           "unknown": unknown, "why": why,
            # ★ 与节点**同源**：缓存命中时校验这条节点还在（被 undo 删掉 ⇒ 作废）
            "node_id": node_id,
            "filled_by": "agent", "generated_by": _actor(a),
@@ -1118,16 +1144,22 @@ def _tool_remember_answer(a: dict) -> dict:
     return {"ok": True, "written": True, "replaced": replaced,
             "key": key, "path": str(p),
             "node_id": node_id,
+            "unknown": unknown,
             "corpus_fingerprint": fp,
-            "note": ("答案已编进树：语料指纹不变时，同类问题先命中这里，"
-                     "不必再问 agent；**指纹一变整体作废**；删掉这个文件即回退。"
-                     "它带 filled_by: agent，**永不进「已验证」**。"
-                     f"同时写了一条自己的记录（id={node_id}，我=是）—— "
-                     "`ask(require=['我=是'])` 查得到，undo 它即回退")}
+            "note": (("**弃答已记录**：这不是「答案是不知道」，是「这条问不出」。"
+                      "同类问题再问会命中它，并明确报 `unknown: true` + `why`；"
+                      f"`ask(require=['type=未答'])` 查得到全部弃答（id={node_id}）。")
+                     if unknown else
+                     ("答案已编进树：语料指纹不变时，同类问题先命中这里，"
+                      "不必再问 agent；**指纹一变整体作废**；删掉这个文件即回退。"
+                      "它带 filled_by: agent，**永不进「已验证」**。"
+                      f"同时写了一条自己的记录（id={node_id}，我=是）—— "
+                      "`ask(require=['我=是'])` 查得到，undo 它即回退"))}
 
 
 def _write_self_node(nodes_dir: Path, key: str, req, forb, answer: str,
-                     src: list[str], a: dict) -> str:
+                     src: list[str], a: dict, unknown: bool = False,
+                     why: str = "") -> str:
     """把这次回答写成一条**结构里的项**（`我=是`）。返回节点 id。
 
     与 `remember` 同一条纪律：**只追加不覆写** ⇒ 同键再答写 `-2` / `-3`，
@@ -1135,6 +1167,10 @@ def _write_self_node(nodes_dir: Path, key: str, req, forb, answer: str,
 
     ⚠️ `evidence_status: 未验证` —— agent 自己写的回答**永远**是这个状态，
        要「已验证」只能外部授予（`§S5` / `README` 的能力表）。
+
+    ★ `unknown=True`（2026-10-26）：这条不是「答案」，是「**答不出**」。
+      `type` 记成 `未答`（不是 `回答`）⇒ **「我有哪些问题答不出」变成一条可查的项**：
+      `ask(require=["type=未答"])`。弃答从「心里知道」变成「结构里记着」。
     """
     base = f"ans-{key}"
     nid = base
@@ -1143,14 +1179,17 @@ def _write_self_node(nodes_dir: Path, key: str, req, forb, answer: str,
         n += 1
         nid = f"{base}-{n}"
     fields = {
-        "type": "回答",
+        "type": "未答" if unknown else "回答",
         "我": "是",
         "evidence_status": "未验证",
         "generated_by": _actor(a),
-        "derived_from": (f"对 require={sorted(req)} forbid={sorted(forb)} 的回答"
-                         "（不是材料；来源见 source）"),
+        "derived_from": (f"对 require={sorted(req)} forbid={sorted(forb)} 的"
+                         + ("**弃答判定**" if unknown else "回答")
+                         + "（不是材料；来源见 source）"),
         "source": list(src),
     }
+    if unknown:
+        fields["why"] = why
     lines = ["---", f'id: "{nid}"', 'filled_by: "agent"',
              f'remembered_at: "{datetime.now().isoformat(timespec="seconds")}"']
     for k in sorted(fields):
@@ -1485,8 +1524,17 @@ TOOLS = [
                                     "description": "这次回答依据哪些条目（可空）"},
                          "actor": {"type": "string"},
                          "session": {"type": "string",
-                                     "description": "会话 id —— 带上它才进变更回执"}},
-                     "required": ["answer"]}},
+                                     "description": "会话 id —— 带上它才进变更回执"},
+                         "unknown": {"type": "boolean",
+                                     "description": "**报告不知道**：这条问不出。"
+                                                    "给了它就等于把「弃答」记成一条结论"
+                                                    "（`type=未答`，可查），不是沉默"},
+                         "why": {"type": "string",
+                                 "description": "unknown=true 时必填：缺什么"
+                                                "（哪个字段 / 哪个维度 / 哪一段）"}},
+                     # ⚠️ answer 不再是必填：`unknown=true` 时它可以是空的 ——
+                     #    「答不出」本来就没有答案文本。二选一由代码校验。
+                     "required": []}},
     {"name": "undo",
      "description": "反事实：删掉一个项，看答案丢什么、哪些方向少成员，然后**原样恢复**"
                     "（指纹逐字比对过才报成功）。材料一个字节没动。",

@@ -1089,11 +1089,49 @@ def main() -> int:
             f"ok={good['out'].get('ok')}"
             f"｜n_answer={good['out'].get('n_answer')}")
 
+        # ── S46 「报告不知道」是一条正式出口（2026-10-26） ────────────────
+        # 原来 agent 只有两条路：给个答案，或者沉默 —— 沉默在结构里不留痕，
+        # 于是它倾向于编一个。给了这条出口，弃答才能被记录、被复核、被查询。
+        WHY = "材料里没有「下载量」这个字段（字段只有 type/scope/notes/source/…）"
+        u1 = tool(c, "remember_answer", {"corpus": "dmeta", "require": ["type=事实"],
+                                         "unknown": True, "why": WHY,
+                                         "session": "abst"})
+        chk("S46a", "★ 弃答能写进去，且**节点记成 `type=未答`**（不是「回答」）",
+            u1["out"].get("written") is True
+            and (u1["out"].get("unknown") is True),
+            f"written={u1['out'].get('written')}"
+            f"｜node={u1['out'].get('node_id')}")
+        hit = tool(c, "ask", {"corpus": "dmeta", "require": ["type=事实"],
+                              "session": "abst"})
+        ca = hit["out"].get("cached_answer") or {}
+        chk("S46b", "★★ 再问同一问题 ⇒ 命中，且**明确报 `unknown: true` + `why`**"
+                    "（不会把「上次判定答不出」当成答案）",
+            ca.get("unknown") is True and ca.get("why") == WHY,
+            f"unknown={ca.get('unknown')}｜why={str(ca.get('why'))[:60]}")
+        # ★ 反向对照：弃答必须说清「缺什么」，否则那是「哑」不是「弃答」
+        #   ⚠️ 键必须**有效**（`proj=p` 是 derive 出来的）—— 第一版用了语料里没有的
+        #   `type=判断点`，结果先报失配，测不到 why 那条校验（判据自己抓到了）。
+        bad2 = tool(c, "remember_answer", {"corpus": "dmeta",
+                                           "require": ["proj=p"],
+                                           "unknown": True})
+        chk("S46c", "★ 反向对照：`unknown=true` 但**不给 why** ⇒ 拒"
+                    "（不说清缺什么，就是哑不是弃答）",
+            "_raw" in bad2["out"] and "why" in json.dumps(bad2["out"],
+                                                          ensure_ascii=False),
+            f"返回={json.dumps(bad2['out'], ensure_ascii=False)[:110]}")
+        # ★ 弃答成为**可查的项**：`type=未答` 能筛出来
+        allu = tool(c, "ask", {"corpus": "dmeta", "require": ["type=未答"],
+                               "limit": 20, "session": "abst"})
+        chk("S46d", "★ 弃答变成**可查的项**：`ask(require=['type=未答'])` 筛得出来",
+            (allu["out"].get("n_answer") or 0) >= 1,
+            f"n_answer={allu['out'].get('n_answer')}（弃答从「心里知道」变成"
+            "「结构里记着」）")
+
     finally:
         c.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S45）")
+    print(f"\n{'✓ 全过' if not FAIL else f'✗ 红 {FAIL} 条'}（S1–S46）")
     return 1 if FAIL else 0
 
 

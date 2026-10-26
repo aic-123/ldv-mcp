@@ -34,6 +34,17 @@
    · 全都答       ⇒ 无支撑题红（编）
    · 只有「孪生答对 + 无支撑说没有」才算过
 
+## ★ 2026-10-26 补：**给了「报告不知道」这条出口**
+
+L3 挡不住 ⇒ 那 agent 只能编吗？**不 —— 如果允许它报告「不知道」。**
+`remember_answer(unknown=true, why=…)` 把弃答记成一条**结论**（`type=未答`）：
+可查（`ask(require=['type=未答'])`）、可复核（`why` 必填）、可纠正（同键再答翻回来）。
+
+    ⚠️ `why` 必填：不说清「缺什么」的弃答是「哑」，不是「弃答」。
+    ⚠️ 命中时单独报 `unknown: true` + `why` —— 不许把「上次判定答不出」当成答案。
+
+**没有出口时它只能编；有了出口，编就只是「没走出口」—— 那是 agent 的事，能判。**
+
 素材：`repo/_data/pypi-deps`（60 个包的真 PyPI 元数据）。
 """
 from __future__ import annotations
@@ -293,6 +304,40 @@ def main() -> int:
             naive_wrong == len(L3),
             "L1/L2 它靠 out_of_structure 全对；L3 它看到项就答 ⇒ 全错")
 
+        # ── L5 「报告不知道」是一条正式出口：L3 的题必须走它 ─────────────
+        # 这是对 L3 缺口的**解法**：agent 没有「说不知道」的出口时，它只能编；
+        # 给了出口，弃答才能被记录、被复核、被查询。
+        print("\n   L5 用「报告不知道」把 10 道 L3 题记成弃答：")
+        wrote = 0
+        for q, pkg, absent, tq, present in L3:
+            r = m.tool("remember_answer", {
+                "corpus": "pypi", "require": [], "unknown": True,
+                "why": f"材料里没有「{q}」所需的信息（{pkg} 这一项的字段里没有它）",
+                "session": "abst"})
+            wrote += bool(r.get("written"))
+        chk("L5a", f"★ 10 道 L3 题全部记成弃答（{wrote}/{len(L3)}）",
+            wrote == len(L3), f"{wrote}/{len(L3)}")
+        au = m.tool("ask", {"corpus": "pypi", "require": ["type=未答"],
+                            "limit": 30, "session": "abst"})
+        chk("L5b", "★ 弃答变成**可查的项**：`type=未答` 筛得出来（不是沉默）",
+            (au.get("n_answer") or 0) >= len(L3),
+            f"n_answer={au.get('n_answer')}（应 ≥ {len(L3)}）")
+        # ★ 反向对照：**弃答不是终局** —— 同一个键后来答得出了，必须能被纠正
+        m.tool("remember_answer", {
+            "corpus": "pypi", "require": ["py=3.11"], "unknown": True,
+            "why": "故意先记成弃答（模拟当时判错）", "session": "abst"})
+        m.tool("remember_answer", {
+            "corpus": "pypi", "require": ["py=3.11"],
+            "answer": "下限 3.11 档有 6 个包（后来查到了）", "session": "abst"})
+        au2 = m.tool("ask", {"corpus": "pypi", "require": ["py=3.11"],
+                             "session": "abst"})
+        ca = au2.get("cached_answer") or {}
+        chk("L5c", "★ 反向对照：**弃答不是终局** —— 同键再答一次正常答案，"
+                   "`unknown` 必须翻回 false",
+            ca.get("unknown") is False
+            and "6 个包" in str(ca.get("answer")),
+            f"unknown={ca.get('unknown')}｜answer={str(ca.get('answer'))[:40]}")
+
         # ── 总判 ────────────────────────────────────────────────────
         print("\n" + "=" * 78)
         print("总判")
@@ -301,8 +346,14 @@ def main() -> int:
         print(f"  L2 取值不存在   {l2_ok}/{len(L2)} 挡得住｜孪生 {l2_twin_ok}/{len(L2)} 答得出")
         print(f"  L3 项在有内容无  **ldv 挡不住**（项都在，正文都没有）"
               f"｜孪生 {l3_twin_text_ok}/{len(L3)} 正文里有")
-        print("\n  ⇒ 结论：**弃答只能靠 agent 读正文，ldv 只挡得住前两层。**")
-        print("     把「ldv 返回了项」当成「有答案」，就是编的开始。")
+        print(f"  L5 弃答出口      记成 `type=未答` 的 {wrote}/{len(L3)} 条，"
+              f"`type=未答` 筛得出来；同键再答能翻回来")
+        print("\n  ⇒ 结论分两半，别混：")
+        print("     ① **ldv 只挡得住前两层**（L1 维度不存在 / L2 取值不存在）；")
+        print("        L3「项在有内容无」它挡不住 —— 那要读正文，不是路由的活。")
+        print("     ② 但它现在给了 agent 一条**正式出口**：`remember_answer(unknown=true, why=…)`")
+        print("        ⇒ 弃答不再是「沉默」，而是**一条被记录的结论**（`type=未答`，可查、可纠正）。")
+        print("\n     **没有出口时它只能编；有了出口，编就只是「没走出口」——那是 agent 的事，能判。**")
         return 1 if FAIL else 0
     finally:
         m.close()
