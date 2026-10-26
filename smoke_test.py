@@ -956,15 +956,24 @@ def main() -> int:
                                              "evidence_status": "已验证"}})
         chk("S42a", "★ agent 声称「已验证」⇒ 拒，且**一个字节都没落盘**",
             (v1["out"].get("ok") is False or "_raw" in v1["out"])
-            and "没资格" in json.dumps(v1["out"], ensure_ascii=False)
+            and "人的档" in json.dumps(v1["out"], ensure_ascii=False)
             and not (qd / "fake1.md").exists(),
             f"ok={v1['out'].get('ok')}｜落盘={(qd / 'fake1.md').exists()}")
         v2 = tool(c, "remember", {"corpus": "qual", "id": "fake2", "body": "x",
                                   "fields": {"type": "事实"}, "filled_by": "human"})
-        chk("S42b", "★ agent 声称 `filled_by=human` ⇒ 拒（不能替人写「我写的」）",
+        chk("S42b", "★ agent 写 `filled_by=human` ⇒ 拒"
+                    "（**不能替别人声明来源** —— 不是「没资格写」）",
             (v2["out"].get("ok") is False or "_raw" in v2["out"])
             and not (qd / "fake2.md").exists(),
             f"ok={v2['out'].get('ok')}｜落盘={(qd / 'fake2.md').exists()}")
+        # ★ 闸不许误伤：写自己的来源（等于 actor）必须允许
+        v2b = tool(c, "remember", {"corpus": "qual", "id": "own1", "body": "x",
+                                   "fields": {"type": "事实"}, "filled_by": "agent"})
+        chk("S42b2", "★ agent 写 `filled_by=agent`（等于自己的 actor）⇒ 允许",
+            v2b["out"].get("written") is True
+            and v2b["out"].get("filled_by") == "agent",
+            f"written={v2b['out'].get('written')}"
+            f"｜filled_by={v2b['out'].get('filled_by')}")
         # ★ 反向对照：闸不能把人一起拦死 —— actor=human 必须写得进去
         v3 = tool(c, "remember", {"corpus": "qual", "id": "real1", "body": "x",
                                   "fields": {"type": "事实",

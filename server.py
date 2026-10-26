@@ -169,46 +169,48 @@ def _actor(args: dict) -> str:
     return str(args.get("actor") or "agent")
 
 
-#: 只有「人」有资格回报的字段取值（2026-10-26 用户定：**让 agent 没资格回报验证**）。
+#: 只有「人」有资格授予的**状态**（2026-10-26 用户定）。
 #:
-#: 这两个值都是**结论**，不是偏好：
-#:   `evidence_status: 已验证`  = 「这条已被验证」
-#:   `filled_by: human`         = 「这条是我写的」
-#: agent 的产物**永远**是「未验证」+ 自己写的 —— 让它写这两个值，
-#: 等于让它给自己发证书，出处分桶与「已验证」那条红线同时作废。
+#: ⚠️ 注意这里**只有 `evidence_status`，没有 `filled_by`** —— 这是用户纠正过一次的分界：
+#:   `filled_by` 是**来源标注**（谁填的），`evidence_status` 是**状态结论**（验没验过）。
+#:   「使用」的含义是**不看来源**：agent 填的数据照样进、照样查、照样用，
+#:   不因为它不是人填的就降级或拒收。
+#:   而「人的填充给特殊地位」体现在：**`human` 是唯一能承载「已验证」的来源**。
+#:   ⇒ 标注不设闸，**特权设闸**。把标注也做成闸，等于「使用」前先查资格 —— 那就不是使用了。
 HUMAN_ONLY_VALUES: dict[str, frozenset[str]] = {
     "evidence_status": frozenset({"已验证"}),
-    "filled_by": frozenset({"human", "人"}),
 }
 
 
-def _refuse_unqualified(actor: str, fields: dict, filled_by: str) -> None:
-    """agent 没资格回报「已验证」或「我写的」—— 当场拒，**不降级、不静默改写**。
+def _stamp_provenance(actor: str, fields: dict, filled_by: str) -> str:
+    """把 `filled_by` 当**通道盖的章**，不是调用方填的表。
 
-    ⚠️ 是**资格**问题，不是权限等级。`§S5` 与 README 都写着「『已验证』只能外部授予」，
-       但那条判据只扫**系统源码**（证明「系统不会自己写」）；
-       走**调用方数据通道**（`fields` 透传）时源码里一个该字面量都没有 ⇒ 判据照样绿。
-       这个闸补的正是那一半。
-    ⚠️ 与 `drill(verdict="wrong")` 同一条纪律（`[否定] ②-a`）：声明 `actor=human` 才收。
-       这是**声明式**信任模型（服务器不验身份），但至少要求你**声明**。
-    ⚠️ 为什么是拒不是降级：降级要猜调用方意图（「你其实想写 agent 吧？」）——
-       而这两个值是**结论**，结论不能猜。猜它就等于替人授予。
+    三条，一条比一条重要：
+
+    1. **`filled_by` 只能记成你自己的 `actor`。** 传一个跟 `actor` 不一样的来源 ⇒ 拒
+       （不是「你没资格写 human」，是「你不能替别人声明来源」）。
+    2. **`evidence_status=已验证` 只有 `actor=human` 能给。** 这是那条「人的填充给特殊地位」
+       的落点：`human` 是**唯一能承载「已验证」的来源**。agent 的产物永远是「未验证」。
+    3. **其余一律放行** —— agent 写什么内容、标什么来源（自己的），都不设闸。
+       「使用」不看来源，所以这里不做任何「先审后用」。
+
+    ⚠️ 为什么 2 不能靠「源码里没有那个字面量」守：那条判据（`[外部授予]`）只证明
+       **系统不会自己写**；走 `fields` 数据通道时源码里一个该字面量都没有 ⇒ 判据照样绿。
+       这个闸补的正是那一半（`S42a`）。
     """
-    if actor == "human":
-        return
-    claimed = dict(fields or {})
-    claimed.setdefault("filled_by", filled_by)
-    ev = claimed.get("evidence_status")
+    if isinstance(filled_by, str) and filled_by and filled_by != actor:
+        raise ValueError(
+            f"filled_by 是**通道盖的章**，不能自己指定 —— 你声明的是 actor={actor}，"
+            f"却写 filled_by={filled_by}。不传就记成 {actor}；"
+            "要标成人的来源，得由人（actor=human）自己调")
+    ev = (fields or {}).get("evidence_status")
     if isinstance(ev, str) and ev in HUMAN_ONLY_VALUES["evidence_status"]:
-        raise ValueError(
-            f"「{ev}」只有人能授予 —— 你声明的是 actor={actor}，**没资格回报它**。"
-            "要留自己的结论：不传 evidence_status（默认「未验证」）；"
-            "要人授予：请调用方以 actor=human 重新调用")
-    fb = claimed.get("filled_by")
-    if isinstance(fb, str) and fb in HUMAN_ONLY_VALUES["filled_by"]:
-        raise ValueError(
-            f"filled_by=「{fb}」是**人的声明** —— 你声明的是 actor={actor}，不能替人写。"
-            f"不传就默认记成 {actor}")
+        if actor != "human":
+            raise ValueError(
+                f"「{ev}」是**人的档** —— 你声明的是 actor={actor}，给不了这个状态。"
+                "你的结论照样能写、能查、能用（不传 evidence_status 即可，默认「未验证」）；"
+                "要人授予：请调用方以 actor=human 重新调用")
+    return filled_by or actor
 
 
 def _cache_stats(corpus: str) -> dict:
@@ -745,10 +747,11 @@ def _tool_remember(a: dict) -> dict:
     p = nodes / (_safe_name(nid) + ".md")
     fields = a.get("fields") or {}
     body = str(a.get("body") or "")
-    filled_by = str(a.get("filled_by") or _actor(a))
-    # ★ 资格闸：agent 没资格回报「已验证」/「我写的」（2026-10-26 用户定）。
-    #   在**落盘之前**拒 —— 不是写完再改，那会留下一条脏记录。
-    _refuse_unqualified(_actor(a), fields, filled_by)
+    # ★ 来源标注是**通道盖的章**，不是调用方填的表；「已验证」是人的档。
+    #   在**落盘之前**处理 —— 不是写完再改，那会留下一条脏记录。
+    #   ⚠️ 除此之外**不设任何闸**：agent 写什么内容都直接进、直接能用（「使用」不看来源）。
+    filled_by = _stamp_provenance(_actor(a), fields,
+                                  str(a.get("filled_by") or ""))
     lines = ["---", f'id: "{nid}"', f'filled_by: "{filled_by}"',
              f'remembered_at: "{datetime.now().isoformat(timespec="seconds")}"']
     for k in sorted(fields):
@@ -1312,19 +1315,21 @@ TOOLS = [
                      "required": ["require"]}},
     {"name": "remember",
      "description": "往自己的私人语料写一个节点（只追加不覆写）。"
-                    "actor 默认 agent（可声明 human）。"
-                    "⚠️ evidence_status=已验证 与 filled_by=human 只有 actor=human 能写 —— "
-                    "agent 没资格回报验证（与 drill(verdict=wrong) 同一条纪律）。",
+                    "**写什么都直接进、直接能查能用的** —— 使用不看来源。"
+                    "两条限制只跟「标注」有关："
+                    "① filled_by 是通道盖的章，只能记成你自己的 actor；"
+                    "② evidence_status=已验证 是**人的档**，只有 actor=human 能给。",
      "inputSchema": {"type": "object",
                      "properties": {
                          "corpus": {"type": "string"},
                          "id": {"type": "string"},
                          "fields": {"type": "object"},
                          "body": {"type": "string"},
-                         "filled_by": {"type": "string"},
+                         "filled_by": {"type": "string",
+                                       "description": "来源标注。不传就记成你的 actor；"
+                                                      "只能等于 actor（不能替别人声明）"},
                          "actor": {"type": "string",
-                                   "description": "默认 agent。声明 human 才有资格写"
-                                                  "「已验证」/「我写的」"}},
+                                   "description": "默认 agent。声明 human 才能给「已验证」"}},
                      "required": ["id", "fields", "body"]}},
     {"name": "drill",
      "description": "下钻一支 = 「这一支有用」。agent 代钻与人的下钻同权，"
